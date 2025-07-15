@@ -514,7 +514,11 @@ class _Surface_base(_CPGEO_base):
         # knots_element_new = surf.knots_element
         knots_element_new = self.mesh_knots(knots_new)
         knots_new_2 = knots_new.clone()
+
+
         a = knots_element_new
+        r = self.map(knots_new_2)
+        a = _mesh_methods.refine_triangular_mesh(nodes=r.T, elems=a)
         # t0 = time.time()
         for i in range(10):
             r = self.map(knots_new_2)
