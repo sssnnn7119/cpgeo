@@ -82,6 +82,9 @@ class _CPGEO_base:
         self.threshold: torch.Tensor = None
         """Influence radius for each knot point [num_knots]"""
 
+        self.k_neighbors: int = 10
+        """Number of nearest neighbors to consider for threshold calculation"""
+
         self._weight_tree = None
         """Data structure for efficient weight computation"""
 
@@ -507,7 +510,7 @@ class _CPGEO_base:
         
         # Number of knots and k-value for k-th nearest neighbor
         num_knots = self.knots.shape[1]
-        k_neighbors = 25  # Use 10th nearest neighbor as default
+        k_neighbors = self.k_neighbors  # Use 10th nearest neighbor as default
         
         # Convert knots to contiguous numpy arrays for C++ interop
         knots_np = self.knots.T.detach().cpu().numpy().astype(np.float64).copy(order='C')
