@@ -78,7 +78,7 @@ triangularcenter = (knots[cpgeo.cp_elements[:, 0]] + knots[cpgeo.cp_elements[:, 
 triangularcenter_ = (cpgeo.cp_vertices.T[cpgeo.cp_elements[:, 0]] +
                     cpgeo.cp_vertices.T[cpgeo.cp_elements[:, 1]] +
                     cpgeo.cp_vertices.T[cpgeo.cp_elements[:, 2]]).T / 3
-
+cpgeo.k_neighbors=10
 cpgeo.initialize()
 cpgeo.pre_load(1)
 
