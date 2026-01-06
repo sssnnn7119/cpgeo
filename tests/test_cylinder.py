@@ -4,8 +4,8 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from mayavi import mlab
 import numpy as np
-import CPGEO
-from CPGEO.utils import mesh, mlab_visualization
+import cpgeo
+from cpgeo.utils import mesh, mlab_visualization
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 import torch
 torch.set_default_dtype(torch.float64)
@@ -63,9 +63,9 @@ control_points[2, index_bottom] = -length / 2
 
 control_points[0] *= -1
 
-cpgeo = CPGEO.surface.Sphere()
+cpgeo = cpgeo.surface.Sphere()
 cpgeo.cp_vertices = control_points
-cpgeo.cp_elements = CPGEO.surface._mesh_methods.sphere_mesh(knots.T)
+cpgeo.cp_elements = cpgeo.surface._mesh_methods.sphere_mesh(knots.T)
 
 normal = torch.cross(knots[cpgeo.cp_elements[:, 1]] - knots[cpgeo.cp_elements[:, 0]],
                     knots[cpgeo.cp_elements[:, 2]] - knots[cpgeo.cp_elements[:, 0]],

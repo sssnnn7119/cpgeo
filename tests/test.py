@@ -2,8 +2,8 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import CPGEO
-from CPGEO.utils import mesh, mlab_visualization
+import cpgeo
+from cpgeo.utils import mesh, mlab_visualization
 
 import torch
 torch.set_default_dtype(torch.float64)
@@ -27,7 +27,7 @@ r1_ind = mesh.divide_mesh(elements)[0][0]
 r1 = r[:, r1_ind]
 e1 = mesh.adjust_faces(elements, r1_ind)
 
-a = CPGEO.surface.Plane()
+a = cpgeo.surface.Plane()
 a.cp_vertices = r1
 a.cp_elements = e1
 a.initialize()

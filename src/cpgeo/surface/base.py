@@ -5,7 +5,7 @@ from ..utils import mesh as _mesh_methods
 from ..utils import sparse as _sparse_methods
 from ..utils import mlab_visualization as vis
 from ..base import _CPGEO_base
-from mayavi import mlab
+import pyvista as pv
 
 import vtk
 
@@ -20,22 +20,15 @@ class _Surface_base(_CPGEO_base):
         
         points, coo = self.get_mesh(1)
         r = self.map(points)
-        coo = coo.tolist()
-        # coo = _mesh_methods.refine_triangular_mesh(r.T, coo).tolist()
-        r = r.tolist()
-        surface = mlab.pipeline.surface(
-            mlab.pipeline.triangular_mesh_source(r[0], r[1], r[2], coo),
-            color=(1.0 / 255, 1.0 / 255, 1.0 / 255),
-            opacity=opacity)
-        surface.actor.property.representation = 'wireframe'
-        control_points = self.cp_vertices.cpu().numpy()
-        mlab.points3d(control_points[0],
-                      control_points[1],
-                      control_points[2],
-                      scale_factor=0.1,
-                      color=(40.0 / 255, 120.0 / 255, 181.0 / 255))
-
-        mlab.show()
+        r_np = r.detach().cpu().numpy().T
+        coo_np = coo.detach().cpu().numpy()
+        faces = np.hstack([np.full((coo_np.shape[0], 1), 3), coo_np]).flatten()
+        mesh = pv.PolyData(r_np, faces=faces)
+        plotter = pv.Plotter()
+        plotter.add_mesh(mesh, style='wireframe', color=(1.0/255, 1.0/255, 1.0/255), opacity=opacity)
+        control_points = self.cp_vertices.cpu().numpy().T
+        plotter.add_points(control_points, color=(40.0/255, 120.0/255, 181.0/255), point_size=0.1)
+        plotter.show()
     
     def export_stl(self, path: str):
         """
@@ -47,48 +40,42 @@ class _Surface_base(_CPGEO_base):
         
         points, coo = self.get_mesh(1)
         r = self.map(points)
-        coo = _mesh_methods.refine_triangular_mesh(r.T, coo).tolist()
-        r = r.tolist()
-        
-        surface = mlab.pipeline.triangular_mesh_source(r[0], r[1], r[2], coo)
-        surface_vtk = surface.outputs[0]._vtk_obj
-        stlWriter = vtk.vtkSTLWriter()
-        stlWriter.SetFileName(path + '.stl')
-        stlWriter.SetInputConnection(surface_vtk.GetOutputPort())
-        stlWriter.Write()
-        mlab.close()
+        coo_np = _mesh_methods.refine_triangular_mesh(r.T, coo).detach().cpu().numpy()
+        r_np = r.detach().cpu().numpy().T
+        faces = np.hstack([np.full((coo_np.shape[0], 1), 3), coo_np]).flatten()
+        mesh = pv.PolyData(r_np, faces=faces)
+        mesh.save(path + '.stl')
 
     def _show(self, opacity: float = 1., color: tuple = (1.0 / 255, 1.0 / 255, 1.0 / 255)):
         points, coo = self.get_mesh(1)
         r = self.map(points)
-        # coo = _mesh_methods.refine_triangular_mesh(r.T, coo).tolist()
-        coo = coo.tolist()
-        r = r.tolist()
-        mlab.triangular_mesh(r[0], r[1], r[2], coo, opacity=opacity, color=color)
+        r_np = r.detach().cpu().numpy().T
+        coo_np = coo.detach().cpu().numpy()
+        faces = np.hstack([np.full((coo_np.shape[0], 1), 3), coo_np]).flatten()
+        mesh = pv.PolyData(r_np, faces=faces)
+        plotter = pv.Plotter()
+        plotter.add_mesh(mesh, color=color, opacity=opacity)
+        plotter.show()
 
     def show_knots(self):
-        r = self.knots.tolist()
-        coo = self.cp_elements.tolist()
-        mlab.triangular_mesh(r[0], r[1], r[2], coo, opacity=1)
-        surface = mlab.pipeline.surface(
-            mlab.pipeline.triangular_mesh_source(r[0], r[1], r[2], coo),
-            color=(1.0 / 255, 1.0 / 255, 1.0 / 255),
-            opacity=1)
-        surface.actor.property.representation = 'wireframe'
-
-        mlab.show()
+        r = self.knots.detach().cpu().numpy().T
+        coo = self.cp_elements.detach().cpu().numpy()
+        faces = np.hstack([np.full((coo.shape[0], 1), 3), coo]).flatten()
+        mesh = pv.PolyData(r, faces=faces)
+        plotter = pv.Plotter()
+        plotter.add_mesh(mesh, opacity=1)
+        plotter.add_mesh(mesh, style='wireframe', color=(1.0/255, 1.0/255, 1.0/255), opacity=1)
+        plotter.show()
 
     def show_P0(self):
-        r = self.cp_vertices.tolist()
-        coo = self.cp_elements.tolist()
-        mlab.triangular_mesh(r[0], r[1], r[2], coo, opacity=1)
-        surface = mlab.pipeline.surface(
-            mlab.pipeline.triangular_mesh_source(r[0], r[1], r[2], coo),
-            color=(1.0 / 255, 1.0 / 255, 1.0 / 255),
-            opacity=1)
-        surface.actor.property.representation = 'wireframe'
-
-        mlab.show()
+        r = self.cp_vertices.detach().cpu().numpy().T
+        coo = self.cp_elements.detach().cpu().numpy()
+        faces = np.hstack([np.full((coo.shape[0], 1), 3), coo]).flatten()
+        mesh = pv.PolyData(r, faces=faces)
+        plotter = pv.Plotter()
+        plotter.add_mesh(mesh, opacity=1)
+        plotter.add_mesh(mesh, style='wireframe', color=(1.0/255,1.0/255,1.0/255), opacity=1)
+        plotter.show()
 
     def geometric_info(self, points: torch.Tensor = None, require: str = 'all'):
         """

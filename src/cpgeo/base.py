@@ -169,6 +169,35 @@ class _CPGEO_base:
     
     
     # region: Mapping methods
+
+    def map_from_weights(self, indices: torch.Tensor, rdot: torch.Tensor, rdudot: torch.Tensor=None, rdu2dot: torch.Tensor = None):
+        control_points_flatten = self.cp_vertices[:, indices[0]]
+
+        r0 = control_points_flatten * rdot
+        r = sparse_methods._sparse_sum(indices,
+                                       r0,
+                                       numel_output=indices[1].max().item()+1)
+
+        output = [r]
+        if rdudot is not None:
+            rdu0 = control_points_flatten.reshape(
+                control_points_flatten.shape[0], 1, -1) * rdudot.reshape(
+                    1, rdudot.shape[0], -1)
+            rdu = sparse_methods._sparse_sum(indices,
+                                             rdu0,
+                                             numel_output=indices[1].max().item()+1)
+            output.append(rdu)
+        if rdu2dot is not None:
+            rdu20 = control_points_flatten.reshape(
+                control_points_flatten.shape[0], 1, 1, -1) * rdu2dot.reshape(
+                    1, rdu2dot.shape[0], rdu2dot.shape[1], -1)
+            rdu2 = sparse_methods._sparse_sum(indices,
+                                              rdu20,
+                                              numel_output=indices[1].max().item()+1)
+            output.append(rdu2)
+
+        return output
+
     def map_c(self, points: torch.Tensor = None, derivative: int = 0):
         """
         Map points from curvilinear space to the configuration space.
@@ -202,32 +231,14 @@ class _CPGEO_base:
             rdudot = self._pre_rdudot
             rdu2dot = self._pre_rdu2dot
 
-        control_points_flatten = self.cp_vertices[:, indices[0]]
-
-        r0 = control_points_flatten * rdot
-        r = sparse_methods._sparse_sum(indices,
-                                       r0,
-                                       numel_output=points.shape[1])
-
         if derivative == 0:
-            return r
-        output = [r]
-        if derivative >= 1:
-            rdu0 = control_points_flatten.reshape(
-                control_points_flatten.shape[0], 1, -1) * rdudot.reshape(
-                    1, rdudot.shape[0], -1)
-            rdu = sparse_methods._sparse_sum(indices,
-                                             rdu0,
-                                             numel_output=points.shape[1])
-            output.append(rdu)
-        if derivative >= 2:
-            rdu20 = control_points_flatten.reshape(
-                control_points_flatten.shape[0], 1, 1, -1) * rdu2dot.reshape(
-                    1, rdu2dot.shape[0], rdu2dot.shape[1], -1)
-            rdu2 = sparse_methods._sparse_sum(indices,
-                                              rdu20,
-                                              numel_output=points.shape[1])
-            output.append(rdu2)
+            output = self.map_from_weights(indices, rdot)[0]
+        elif derivative == 1:
+            output = self.map_from_weights(indices, rdot, rdudot=rdudot)
+        elif derivative == 2:
+            output = self.map_from_weights(
+                indices, rdot, rdudot=rdudot, rdu2dot=rdu2dot)
+
         return output
 
     def map(self, points: torch.Tensor = None, derivative: int = 0):

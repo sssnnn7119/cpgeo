@@ -7,11 +7,10 @@ import sys
 
 current_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_path)
-from C_api import faceApi
-import sparse as __sparse_methods
-import mlab_visualization as vis
+from .C_api import faceApi
+from . import sparse as __sparse_methods
+from . import mlab_visualization as vis
 import networkx as __nx
-import mayavi.mlab as __mlab
 import scipy.sparse as sp
 import pypardiso
 
@@ -142,9 +141,9 @@ def refine_triangular_mesh(nodes: torch.Tensor, elems: torch.Tensor):
     num_nodes = int(nodes.shape[0])
     num_edges = int(edges.shape[0])
 
-    edges = np.array(edges.tolist())
-    adjacent_faces = np.array(adjacent_faces.tolist())
-    another_points_index = np.array(another_points_index.tolist())
+    edges = np.array(edges.tolist(), dtype=np.int32)
+    adjacent_faces = np.array(adjacent_faces.tolist(), dtype=np.int32)
+    another_points_index = np.array(another_points_index.tolist(), dtype=np.int32)
     elements = np.array(elems.tolist(), dtype=np.int32)
     nodes = np.array(nodes.tolist(), dtype=np.float64)
 

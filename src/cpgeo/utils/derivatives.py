@@ -5,7 +5,7 @@ import sys
 current_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_path)
 
-from sparse import _sparse_reshape, _sparse_permute, _sparse_unsqueeze_repeat
+from .sparse import _sparse_reshape, _sparse_permute, _sparse_unsqueeze_repeat
 
 def _from_AdI_to_Adru(AdI: torch.Tensor = None,
                         AdII: torch.Tensor = None,

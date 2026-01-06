@@ -2,15 +2,15 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import CPGEO
-from CPGEO.utils import mesh, mlab_visualization
+import cpgeo
+from cpgeo.utils import mesh, mlab_visualization
 
 import torch
 torch.set_default_dtype(torch.float64)
 torch.set_default_device('cpu')
 
-a0 = CPGEO.surface.sphere(100, 4)
-a  = CPGEO.surface.Sphere_Symmetry(symmetric=[1, [0]])
+a0 = cpgeo.surface.sphere(100, 4)
+a  = cpgeo.surface.Sphere_Symmetry(symmetric=[1, [0]])
 a._cp_vertices = a0.cp_vertices
 a._cp_elements = a0.cp_elements
 a.initialize()
