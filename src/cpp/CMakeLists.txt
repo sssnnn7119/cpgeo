@@ -3,18 +3,12 @@ cmake_minimum_required(VERSION 3.15)
 # Create the cpgeo shared library
 add_library(cpgeo SHARED
     # 源文件
-    cpgeo.cpp      # 主文件，包含 C API 导出
-    src/basisfunc.cpp   # B-spline 基函数
-    src/tensor.cpp    # 多维数组实现
-    src/mappingfunc.cpp  # 映射函数实现
-    src/multidimfunc.cpp
+    cpgeo.cpp
+    src/triangular_mesh.cpp
     
     # 头文件（让 IDE 能显示和索引）
-    ../../include/cpgeo.h
-    include/basisfunc.h
-    include/tensor.h
-    include/mappingfunc.h
-    include/multidimfunc.h
+    include/triangular_mesh.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include/cpgeo.h
 )
 
 # Add alias for consistent naming
@@ -51,7 +45,11 @@ else()
     target_compile_options(cpgeo PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-# Link OpenMP if found
+# C++20 standard
+set_property(TARGET cpgeo PROPERTY CXX_STANDARD 20)
+set_property(TARGET cpgeo PROPERTY CXX_STANDARD_REQUIRED ON)
+
+# Link OpenMP if found (optional, can be removed if not needed)
 if(OpenMP_CXX_FOUND)
     target_link_libraries(cpgeo PUBLIC OpenMP::OpenMP_CXX)
     message(STATUS "Linking cpgeo with OpenMP")
@@ -59,14 +57,25 @@ endif()
 
 # Link libraries (add any dependencies here)
 # target_link_libraries(cpgeo PUBLIC/PRIVATE dependency_name)
+
 # ==================== Executable ====================
 # Create the cpgeo executable for testing/demo
 add_executable(cpgeo_demo
     tests/main.cpp
+    src/triangular_mesh.cpp  # Include triangular_mesh implementation directly
 )
 
-# Link the executable with the library
+# Include directories for the demo
+target_include_directories(cpgeo_demo PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+# Link the executable with the library (for C interface if needed)
 target_link_libraries(cpgeo_demo PRIVATE cpgeo::cpgeo)
+
+# C++20 standard for demo
+set_property(TARGET cpgeo_demo PROPERTY CXX_STANDARD 20)
+set_property(TARGET cpgeo_demo PROPERTY CXX_STANDARD_REQUIRED ON)
 
 # Set output name
 set_target_properties(cpgeo_demo PROPERTIES
