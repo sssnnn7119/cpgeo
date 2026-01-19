@@ -489,7 +489,7 @@ size_t SphereTriangulation::size() const {
     return triangles.size();
 }
 
-void SphereTriangulation::getTriangleIndices(int* results) const {
+void SphereTriangulation::getTriangleIndices(std::span<int> results) const {
     for (size_t i = 0; i < triangles.size(); ++i) {
         results[i * 3] = triangles[i][0];
         results[i * 3 + 1] = triangles[i][1];

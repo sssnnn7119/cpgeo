@@ -29,7 +29,7 @@ public:
     
     void triangulate();
     size_t size() const;
-    void getTriangleIndices(int* results) const;
+    void getTriangleIndices(std::span<int> results) const;
     void exportToObj(const std::string& filename) const;
 };
 

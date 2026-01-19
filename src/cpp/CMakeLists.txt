@@ -6,10 +6,16 @@ add_library(cpgeo SHARED
     cpgeo.cpp
     src/triangulation.cpp
     src/sphere_triangulation.cpp
+    src/cpgeo_mapping.cpp
+    src/space_tree.cpp
+    src/tensor.cpp
     
     # 头文件（让 IDE 能显示和索引）
     include/triangulation.h
     include/sphere_triangulation.h
+    include/cpgeo_mapping.h
+    include/space_tree.h
+    include/tensor.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include/cpgeo.h
 )
 
@@ -47,8 +53,8 @@ else()
     target_compile_options(cpgeo PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-# C++20 standard
-set_property(TARGET cpgeo PROPERTY CXX_STANDARD 20)
+# C++23 standard
+set_property(TARGET cpgeo PROPERTY CXX_STANDARD 23)
 set_property(TARGET cpgeo PROPERTY CXX_STANDARD_REQUIRED ON)
 
 # Link OpenMP if found (optional, can be removed if not needed)
@@ -64,16 +70,14 @@ endif()
 # Create the cpgeo executable for testing/demo
 add_executable(cpgeo_demo
     tests/main.cpp
-    src/triangulation.cpp  # Include triangulation implementation directly
-    src/sphere_triangulation.cpp  # Include sphere triangulation
 )
 
 # Include directories for the demo
 target_include_directories(cpgeo_demo PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
 )
 
-# Link the executable with the library (for C interface if needed)
+# Link the executable with the library
 target_link_libraries(cpgeo_demo PRIVATE cpgeo::cpgeo)
 
 # C++20 standard for demo

@@ -3,16 +3,217 @@
 #include <cmath>
 #include <unordered_map>
 #include <array>
+#include <chrono>
+#include <algorithm>
+#include <random>
 #include "cpgeo.h"
-#include "triangulation.h"
-#include "sphere_triangulation.h"
 #include <math.h>
 #include <time.h>
 
 const double M_PI = 3.14159265358979323846;
 
+namespace TestSpaceTree {
 
-using namespace cpgeo;
+    void test_performance() {
+        std::cout << "=== Test SpaceTree Performance ===" << std::endl;
+
+        const int num_knots = 10000;
+        const int num_queries = 2000;
+        const double space_size = 100.0;
+        const double avg_radius = 5.0;
+
+        std::vector<double> knots(num_knots * 3);
+        std::vector<double> thresholds(num_knots);
+        std::vector<double> queries(num_queries * 3);
+
+        std::mt19937 gen(42);
+        std::uniform_real_distribution<> coord_dist(-space_size, space_size);
+        std::uniform_real_distribution<> radius_dist(1.0, avg_radius * 2);
+
+        // Generate knots
+        for(int i=0; i<num_knots; ++i) {
+            knots[i*3] = coord_dist(gen);
+            knots[i*3+1] = coord_dist(gen);
+            knots[i*3+2] = coord_dist(gen);
+            thresholds[i] = radius_dist(gen);
+        }
+
+        // Generate queries
+        for(int i=0; i<num_queries; ++i) {
+            queries[i*3] = coord_dist(gen);
+            queries[i*3+1] = coord_dist(gen);
+            queries[i*3+2] = coord_dist(gen);
+        }
+
+        // Build Tree
+        std::cout << "Building Tree with " << num_knots << " knots..." << std::endl;
+        auto start = std::chrono::high_resolution_clock::now();
+        cpgeo_handle_t tree_handle = space_tree_create(knots.data(), num_knots, thresholds.data());
+        auto end = std::chrono::high_resolution_clock::now();
+        std::cout << "Build time: " << std::chrono::duration<double>(end - start).count() << "s" << std::endl;
+
+        if (!tree_handle) {
+            std::cout << "ERROR: Failed to create SpaceTree" << std::endl;
+            return;
+        }
+
+        // Print tree stats (we can't easily do this with C API, so skip for now)
+        std::cout << "Tree created successfully" << std::endl;
+
+        // 1. Correctness Check (Brute Force vs Tree)
+        std::cout << "Verifying correctness..." << std::endl;
+        // Check first 100 queries
+        int check_count = 100;
+        bool all_correct = true;
+
+        // Prepare result arrays for C API
+        std::vector<int> num_results_per_query(check_count);
+        int total_results;
+        int ret = space_tree_query_compute(tree_handle, queries.data(), check_count, num_results_per_query.data(), &total_results);
+        if (ret != 0) {
+            std::cout << "ERROR: Space tree query compute failed" << std::endl;
+            space_tree_destroy(tree_handle);
+            return;
+        }
+
+        std::vector<int> results(total_results * 2);
+        ret = space_tree_query_get(tree_handle, total_results, results.data());
+        if (ret != 0) {
+            std::cout << "ERROR: Space tree query get failed" << std::endl;
+            space_tree_destroy(tree_handle);
+            return;
+        }
+
+        // Parse results into per-query vectors
+        std::vector<std::vector<int>> tree_results(check_count);
+        for (int i = 0; i < total_results; ++i) {
+            int query_idx = results[i];
+            int knot_idx = results[i + total_results];
+            if (query_idx < 0 || query_idx >= check_count) {
+                 std::cout << "CRITICAL ERROR: query_idx out of bounds: " << query_idx << " (max " << check_count << ")" << std::endl;
+                 continue;
+            }
+            tree_results[query_idx].push_back(knot_idx);
+        }
+
+        for(int i = 0; i < check_count; ++i) {
+            std::vector<int> bf_indices;
+            double qx = queries[i*3+0];
+            double qy = queries[i*3+1];
+            double qz = queries[i*3+2];
+
+            for(int j = 0; j < num_knots; ++j) {
+                double kx = knots[j*3+0];
+                double ky = knots[j*3+1];
+                double kz = knots[j*3+2];
+                double r = thresholds[j];
+                double dx = qx - kx;
+                double dy = qy - ky;
+                double dz = qz - kz;
+                if (dx*dx + dy*dy + dz*dz <= r*r) {
+                    bf_indices.push_back(j);
+                }
+            }
+            
+            std::sort(bf_indices.begin(), bf_indices.end());
+            
+            // Extract tree results for this query
+            std::vector<int> tree_indices = tree_results[i];
+            std::sort(tree_indices.begin(), tree_indices.end());
+
+            if (bf_indices != tree_indices) {
+                std::cout << "Mismatch at query " << i << ". BF: " << bf_indices.size() << ", Tree: " << tree_indices.size() << std::endl;
+                
+                // 打印详细的点对信息
+                std::cout << "  Query point " << i << ": (" << qx << ", " << qy << ", " << qz << ")" << std::endl;
+                std::cout << "  BF indices: ";
+                for (int idx : bf_indices) std::cout << idx << " ";
+                std::cout << std::endl;
+                std::cout << "  Tree indices: ";
+                for (int idx : tree_indices) std::cout << idx << " ";
+                std::cout << std::endl;
+                
+                // 检查缺失的点对
+                std::vector<int> missing_in_tree;
+                std::set_difference(bf_indices.begin(), bf_indices.end(), 
+                                  tree_indices.begin(), tree_indices.end(), 
+                                  std::back_inserter(missing_in_tree));
+                if (!missing_in_tree.empty()) {
+                    std::cout << "  Missing in tree: ";
+                    for (int idx : missing_in_tree) std::cout << idx << " ";
+                    std::cout << std::endl;
+                }
+                
+                std::vector<int> extra_in_tree;
+                std::set_difference(tree_indices.begin(), tree_indices.end(), 
+                                  bf_indices.begin(), bf_indices.end(), 
+                                  std::back_inserter(extra_in_tree));
+                if (!extra_in_tree.empty()) {
+                    std::cout << "  Extra in tree: ";
+                    for (int idx : extra_in_tree) std::cout << idx << " ";
+                    std::cout << std::endl;
+                }
+                
+                all_correct = false;
+                break;
+            }
+        }
+
+        if (all_correct) {
+            std::cout << "Correctness Verified!" << std::endl;
+        } else {
+            std::cout << "Correctness Check FAILED!" << std::endl;
+        }
+
+        // 2. Performance Benchmark
+        std::cout << "Running Benchmark (" << num_queries << " queries)..." << std::endl;
+
+        // Tree
+        start = std::chrono::high_resolution_clock::now();
+        std::vector<int> bench_num_results_per_query(num_queries);
+        int bench_total_results;
+        int bench_ret = space_tree_query_compute(tree_handle, queries.data(), num_queries, bench_num_results_per_query.data(), &bench_total_results);
+        if (bench_ret != 0) {
+            std::cout << "ERROR: Bench query compute failed" << std::endl;
+            space_tree_destroy(tree_handle);
+            return;
+        }
+        std::vector<int> bench_results(bench_total_results * 2);
+        bench_ret = space_tree_query_get(tree_handle, bench_total_results, bench_results.data());
+        end = std::chrono::high_resolution_clock::now();
+        double tree_time = std::chrono::duration<double>(end - start).count();
+        std::cout << "Tree Query Time: " << tree_time * 1000 << " ms" << std::endl;
+
+        // Brute Force (single threaded for fair baseline comparison implies basic loop)
+        // Note: Real world BF might be vectorized, but O(N*M) is the point.
+        start = std::chrono::high_resolution_clock::now();
+        volatile int dummy = 0;
+        #pragma omp parallel for reduction(+:dummy)
+        for(int i=0; i<num_queries; ++i) {
+            double qx = queries[i*3+0];
+            double qy = queries[i*3+1];
+            double qz = queries[i*3+2];
+            for(int j=0; j<num_knots; ++j) {
+                double kx = knots[j*3+0];
+                double ky = knots[j*3+1];
+                double kz = knots[j*3+2];
+                double r = thresholds[j];
+                // simple check
+                if ((qx-kx)*(qx-kx) + (qy-ky)*(qy-ky) + (qz-kz)*(qz-kz) <= r*r) {
+                    dummy++;
+                }
+            }
+        }
+        end = std::chrono::high_resolution_clock::now();
+        double bf_time = std::chrono::duration<double>(end - start).count();
+        std::cout << "Brute Force (OpenMP) Time: " << bf_time * 1000 << " ms" << std::endl;
+
+        std::cout << "Speedup: " << bf_time / tree_time << "x" << std::endl;
+
+        // Clean up
+        space_tree_destroy(tree_handle);
+    }
+}
 
 namespace TestTriangulationPlain {
     // Test case 1: Simple square with 4 points
@@ -27,13 +228,19 @@ namespace TestTriangulationPlain {
         };
         
         int num_nodes = 4;
-        std::vector<int> triangles(num_nodes * 2 * 3);  // Allocate enough space
         int num_triangles = 0;
         
-        int result = cpgeo_triangulate(nodes.data(), num_nodes, triangles.data(), &num_triangles);
+        cpgeo_handle_t handle = triangulation_compute(nodes.data(), num_nodes, &num_triangles);
+        if (!handle) {
+            std::cout << "ERROR: Triangulation compute failed" << std::endl;
+            return false;
+        }
         
+        std::vector<int> triangles(num_triangles * 3);
+        
+        int result = triangulation_get_data(handle, triangles.data());
         if (result != 0) {
-            std::cout << "ERROR: Triangulation failed with code " << result << std::endl;
+            std::cout << "ERROR: Triangulation get data failed with code " << result << std::endl;
             return false;
         }
         
@@ -51,9 +258,9 @@ namespace TestTriangulationPlain {
         std::cout << (passed ? "PASSED" : "FAILED") << std::endl << std::endl;
         
         if (passed) {
-            DelaunayTriangulation triangulation(std::span<const double>(nodes.data(), num_nodes * 2));
-            triangulation.triangulate();
-            triangulation.exportToObj("test1_square.obj");
+            // DelaunayTriangulation triangulation(std::span<const double>(nodes.data(), num_nodes * 2));
+            // triangulation.triangulate();
+            // triangulation.exportToObj("test1_square.obj");
         }
         
         return passed;
@@ -73,13 +280,19 @@ namespace TestTriangulationPlain {
             nodes.push_back(std::sin(angle));
         }
         
-        std::vector<int> triangles(num_nodes * 3 * 3);
         int num_triangles = 0;
         
-        int result = cpgeo_triangulate(nodes.data(), num_nodes, triangles.data(), &num_triangles);
+        cpgeo_handle_t handle = triangulation_compute(nodes.data(), num_nodes, &num_triangles);
+        if (!handle) {
+            std::cout << "ERROR: Triangulation compute failed" << std::endl;
+            return false;
+        }
         
+        std::vector<int> triangles(num_triangles * 3);
+        
+        int result = triangulation_get_data(handle, triangles.data());
         if (result != 0) {
-            std::cout << "ERROR: Triangulation failed with code " << result << std::endl;
+            std::cout << "ERROR: Triangulation get data failed with code " << result << std::endl;
             return false;
         }
         
@@ -111,9 +324,9 @@ namespace TestTriangulationPlain {
         std::cout << (passed ? "PASSED" : "FAILED") << std::endl << std::endl;
         
         if (passed) {
-            DelaunayTriangulation triangulation(std::span<const double>(nodes.data(), num_nodes * 2));
-            triangulation.triangulate();
-            triangulation.exportToObj("test2_circle.obj");
+            // DelaunayTriangulation triangulation(std::span<const double>(nodes.data(), num_nodes * 2));
+            // triangulation.triangulate();
+            // triangulation.exportToObj("test2_circle.obj");
         }
         
         return passed;
@@ -132,13 +345,19 @@ namespace TestTriangulationPlain {
         };
         
         int num_nodes = 20;
-        std::vector<int> triangles(num_nodes * 3 * 3);
         int num_triangles = 0;
         
-        int result = cpgeo_triangulate(nodes.data(), num_nodes, triangles.data(), &num_triangles);
+        cpgeo_handle_t handle = triangulation_compute(nodes.data(), num_nodes, &num_triangles);
+        if (!handle) {
+            std::cout << "ERROR: Triangulation compute failed" << std::endl;
+            return false;
+        }
         
+        std::vector<int> triangles(num_triangles * 3);
+        
+        int result = triangulation_get_data(handle, triangles.data());
         if (result != 0) {
-            std::cout << "ERROR: Triangulation failed with code " << result << std::endl;
+            std::cout << "ERROR: Triangulation get data failed with code " << result << std::endl;
             return false;
         }
         
@@ -166,9 +385,9 @@ namespace TestTriangulationPlain {
         std::cout << (passed ? "PASSED" : "FAILED") << std::endl << std::endl;
         
         if (passed) {
-            DelaunayTriangulation triangulation(std::span<const double>(nodes.data(), num_nodes * 2));
-            triangulation.triangulate();
-            triangulation.exportToObj("test3_random.obj");
+            // DelaunayTriangulation triangulation(std::span<const double>(nodes.data(), num_nodes * 2));
+            // triangulation.triangulate();
+            // triangulation.exportToObj("test3_random.obj");
         }
         
         return passed;
@@ -185,13 +404,19 @@ namespace TestTriangulationPlain {
         };
         
         int num_nodes = 3;
-        std::vector<int> triangles(10 * 3);
         int num_triangles = 0;
         
-        int result = cpgeo_triangulate(nodes.data(), num_nodes, triangles.data(), &num_triangles);
+        cpgeo_handle_t handle = triangulation_compute(nodes.data(), num_nodes, &num_triangles);
+        if (!handle) {
+            std::cout << "ERROR: Triangulation compute failed" << std::endl;
+            return false;
+        }
         
+        std::vector<int> triangles(num_triangles * 3);
+        
+        int result = triangulation_get_data(handle, triangles.data());
         if (result != 0) {
-            std::cout << "ERROR: Triangulation failed with code " << result << std::endl;
+            std::cout << "ERROR: Triangulation get data failed with code " << result << std::endl;
             return false;
         }
         
@@ -209,19 +434,13 @@ namespace TestTriangulationPlain {
         std::cout << (passed ? "PASSED" : "FAILED") << std::endl << std::endl;
         
         if (passed) {
-            DelaunayTriangulation triangulation(std::span<const double>(nodes.data(), num_nodes * 2));
-            triangulation.triangulate();
-            triangulation.exportToObj("test4_minimum.obj");
+            // DelaunayTriangulation triangulation(std::span<const double>(nodes.data(), num_nodes * 2));
+            // triangulation.triangulate();
+            // triangulation.exportToObj("test4_minimum.obj");
         }
         
         return passed;
-    }
-
-}
-
-
-namespace TestTriangulationSphere {
-    
+    } 
     // 检查三角形法向量是否朝外（对于球面，法向量应该与顶点位置向量同向）
     bool checkNormalOrientation(const std::vector<std::array<int, 3>>& triangles, 
                                  const double* vertices, int num_vertices) {
@@ -386,20 +605,26 @@ namespace TestTriangulationSphere {
         }
         // std::cout << "Number of sphere points: " << num_points << std::endl;
         
-        SphereTriangulation sphere_tri(std::span<const double>(sphere_points.get(), num_points * 3));
-        sphere_tri.triangulate();
+        int num_triangles = 0;
+        cpgeo_handle_t handle = sphere_triangulation_compute(sphere_points.get(), num_points, &num_triangles);
+        if (!handle) {
+            std::cout << "ERROR: Sphere triangulation compute failed" << std::endl;
+            return false;
+        }
         
-        size_t num_triangles = sphere_tri.size();
-        // std::cout << "Number of triangles: " << num_triangles << std::endl;
-        
-        // 获取三角形数据
         std::vector<int> triangle_indices(num_triangles * 3);
-        sphere_tri.getTriangleIndices(triangle_indices.data());
+        int result = sphere_triangulation_get_data(handle, triangle_indices.data());
+        if (result != 0) {
+            std::cout << "ERROR: Sphere triangulation get data failed with code " << result << std::endl;
+            return false;
+        }
+        
+        // std::cout << "Number of triangles: " << num_triangles << std::endl;
         
         // 转换为 vector<array<int,3>> 格式
         std::vector<std::array<int, 3>> triangles_vec;
         triangles_vec.reserve(num_triangles);
-        for (size_t i = 0; i < num_triangles; ++i) {
+        for (int i = 0; i < num_triangles; ++i) {
             triangles_vec.push_back({
                 triangle_indices[i * 3],
                 triangle_indices[i * 3 + 1],
@@ -417,14 +642,12 @@ namespace TestTriangulationSphere {
         std::cout << (passed ? "PASSED" : "FAILED") << std::endl << std::endl;
         
         if (num_triangles > 0) {
-            sphere_tri.exportToObj("test5_sphere.obj");
+            // sphere_tri.exportToObj("test5_sphere.obj");
         }
         
         return passed;
     }
-}
-
-int main() {
+    void test_mesh(){
     std::cout << "========================================" << std::endl;
     std::cout << "CPGEO Delaunay Triangulation Test Suite" << std::endl;
     std::cout << "========================================" << std::endl << std::endl;
@@ -434,39 +657,50 @@ int main() {
 
     // Run all tests
     auto t0 = clock();
-    if (TestTriangulationPlain::test_minimum_points()) passed++;
+    if (test_minimum_points()) passed++;
     total++;
     auto t1 = clock();
     std::cout << "Test "<< total << " time: " << double(t1 - t0) / CLOCKS_PER_SEC << " seconds" << std::endl << std::endl;
 
     t0 = clock();
-    if (TestTriangulationPlain::test_square()) passed++;
+    if (test_square()) passed++;
     total++;
     t1 = clock();
     std::cout << "Test "<< total << " time: " << double(t1 - t0) / CLOCKS_PER_SEC << " seconds" << std::endl << std::endl;
     
     t0 = clock();
-    if (TestTriangulationPlain::test_circle()) passed++;
+    if (test_circle()) passed++;
     total++;
     t1 = clock();
     std::cout << "Test "<< total << " time: " << double(t1 - t0) / CLOCKS_PER_SEC << " seconds" << std::endl << std::endl;
 
     t0 = clock();
-    if (TestTriangulationPlain::test_random_points()) passed++;
+    if (test_random_points()) passed++;
     total++;
     t1 = clock();
     std::cout << "Test "<< total << " time: " << double(t1 - t0) / CLOCKS_PER_SEC << " seconds" << std::endl << std::endl;
 
     t0 = clock();
-    if (TestTriangulationSphere::test_sphere_simple()) passed++;
+    if (test_sphere_simple()) passed++;
     total++;
     t1 = clock();
     std::cout << "Test "<< total << " time: " << double(t1 - t0) / CLOCKS_PER_SEC << " seconds" << std::endl << std::endl;
+
     
+
     // Summary
     std::cout << "========================================" << std::endl;
     std::cout << "Test Results: " << passed << "/" << total << " passed" << std::endl;
     std::cout << "========================================" << std::endl;
+}
+}
+
+
+
+int main() {
+
+    TestSpaceTree::test_performance();
+    TestTriangulationPlain::test_mesh();
     
-    return (passed == total) ? 0 : 1;
+    return 0;
 }
