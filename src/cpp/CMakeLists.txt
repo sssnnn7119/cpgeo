@@ -4,10 +4,12 @@ cmake_minimum_required(VERSION 3.15)
 add_library(cpgeo SHARED
     # 源文件
     cpgeo.cpp
-    src/triangular_mesh.cpp
+    src/triangulation.cpp
+    src/sphere_triangulation.cpp
     
     # 头文件（让 IDE 能显示和索引）
-    include/triangular_mesh.h
+    include/triangulation.h
+    include/sphere_triangulation.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include/cpgeo.h
 )
 
@@ -62,7 +64,8 @@ endif()
 # Create the cpgeo executable for testing/demo
 add_executable(cpgeo_demo
     tests/main.cpp
-    src/triangular_mesh.cpp  # Include triangular_mesh implementation directly
+    src/triangulation.cpp  # Include triangulation implementation directly
+    src/sphere_triangulation.cpp  # Include sphere triangulation
 )
 
 # Include directories for the demo

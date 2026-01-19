@@ -1,10 +1,11 @@
-#include "../include/triangular_mesh.h"
+#include "triangulation.h"
 #include <algorithm>
 #include <unordered_map>
 #include <limits>
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <omp.h>
 
 namespace cpgeo {
 
@@ -70,12 +71,50 @@ bool DelaunayTriangulation::isInCircumcircle(const Triangle& tri, int point_idx)
 
 void DelaunayTriangulation::bowyerWatsonStep(int node_idx) {
     // Find triangles whose circumcircle contains the node
-    std::vector<int> bad_triangles;
-    bad_triangles.reserve(triangles.size());
+    std::vector<size_t> bad_triangles;
+    bad_triangles.reserve(32);  // 预估大小，避免多次扩容
     
-    for (size_t i = 0; i < triangles.size(); ++i) {
-        if (isInCircumcircle(triangles[i], node_idx)) {
-            bad_triangles.push_back(static_cast<int>(i));
+    const size_t num_triangles = triangles.size();
+    
+    // 当三角形数量较多时使用并行优化
+    if (num_triangles > 100) {
+        const int num_threads = 8;
+        std::vector<std::vector<size_t>> thread_bad_triangles(num_threads);
+        
+        // 预分配每个线程的空间
+        for (int t = 0; t < num_threads; ++t) {
+            thread_bad_triangles[t].reserve(num_triangles / num_threads + 16);
+        }
+        
+        #pragma omp parallel num_threads(num_threads)
+        {
+            int tid = omp_get_thread_num();
+            
+            #pragma omp for schedule(static)
+            for (int i = 0; i < static_cast<int>(num_triangles); ++i) {
+                if (isInCircumcircle(triangles[i], node_idx)) {
+                    thread_bad_triangles[tid].push_back(static_cast<size_t>(i));
+                }
+            }
+        }
+        
+        // 合并各线程结果（无需加锁）
+        size_t total_size = 0;
+        for (const auto& vec : thread_bad_triangles) {
+            total_size += vec.size();
+        }
+        bad_triangles.reserve(total_size);
+        
+        for (auto& vec : thread_bad_triangles) {
+            bad_triangles.insert(bad_triangles.end(), 
+                               std::make_move_iterator(vec.begin()),
+                               std::make_move_iterator(vec.end()));
+        }
+    } else {
+        for (size_t i = 0; i < num_triangles; ++i) {
+            if (isInCircumcircle(triangles[i], node_idx)) {
+                bad_triangles.push_back(i);
+            }
         }
     }
     
@@ -85,7 +124,7 @@ void DelaunayTriangulation::bowyerWatsonStep(int node_idx) {
     std::unordered_map<std::pair<int, int>, int, EdgeHash> edge_count;
     edge_count.reserve(bad_triangles.size() * 3);
     
-    for (int tri_idx : bad_triangles) {
+    for (size_t tri_idx : bad_triangles) {
         const auto& tri = triangles[tri_idx];
         for (int j = 0; j < 3; ++j) {
             int a = tri[j];
@@ -95,17 +134,25 @@ void DelaunayTriangulation::bowyerWatsonStep(int node_idx) {
         }
     }
 
+    // 收集边界边
+    std::vector<std::pair<int, int>> boundary_edges;
+    boundary_edges.reserve(bad_triangles.size() * 2);
+    for (const auto& [edge, count] : edge_count) {
+        if (count == 1) {
+            boundary_edges.emplace_back(edge);
+        }
+    }
+
     // Remove bad triangles (in reverse order to maintain indices)
-    std::sort(bad_triangles.begin(), bad_triangles.end(), std::greater<int>());
-    for (int idx : bad_triangles) {
+    std::sort(bad_triangles.begin(), bad_triangles.end(), std::greater<size_t>());
+    for (size_t idx : bad_triangles) {
         triangles.erase(triangles.begin() + idx);
     }
 
     // Add new triangles for each boundary edge
-    for (const auto& [edge, count] : edge_count) {
-        if (count == 1) {
-            triangles.push_back(makeCounterClockwise(edge.first, edge.second, node_idx));
-        }
+    triangles.reserve(triangles.size() + boundary_edges.size());
+    for (const auto& edge : boundary_edges) {
+        triangles.emplace_back(makeCounterClockwise(edge.first, edge.second, node_idx));
     }
 }
 
@@ -124,22 +171,55 @@ void DelaunayTriangulation::removeSuperTriangleVertices() {
 
 void DelaunayTriangulation::triangulate() {
     triangles.clear();
+    triangles.reserve(num_original_nodes * 2 + 10);  // 预估最终三角形数量
     
     if (num_original_nodes < 3) return;
 
     // Calculate bounding box
-    double minX = std::numeric_limits<double>::max();
-    double minY = std::numeric_limits<double>::max();
-    double maxX = std::numeric_limits<double>::lowest();
-    double maxY = std::numeric_limits<double>::lowest();
+    double minX = nodes[0];
+    double minY = nodes[1];
+    double maxX = minX;
+    double maxY = minY;
     
-    for (int i = 0; i < num_original_nodes; ++i) {
-        double x = nodes[i * 2];
-        double y = nodes[i * 2 + 1];
-        minX = std::min(minX, x);
-        minY = std::min(minY, y);
-        maxX = std::max(maxX, x);
-        maxY = std::max(maxY, y);
+    // 当点数较多时使用并行归约
+    if (num_original_nodes > 1000) {
+        const int num_threads = 8;
+        std::vector<double> thread_minX(num_threads, nodes[0]);
+        std::vector<double> thread_minY(num_threads, nodes[1]);
+        std::vector<double> thread_maxX(num_threads, nodes[0]);
+        std::vector<double> thread_maxY(num_threads, nodes[1]);
+        
+        #pragma omp parallel num_threads(num_threads)
+        {
+            int tid = omp_get_thread_num();
+            
+            #pragma omp for schedule(static)
+            for (int i = 1; i < num_original_nodes; ++i) {
+                double x = nodes[i * 2];
+                double y = nodes[i * 2 + 1];
+                thread_minX[tid] = (x < thread_minX[tid]) ? x : thread_minX[tid];
+                thread_minY[tid] = (y < thread_minY[tid]) ? y : thread_minY[tid];
+                thread_maxX[tid] = (x > thread_maxX[tid]) ? x : thread_maxX[tid];
+                thread_maxY[tid] = (y > thread_maxY[tid]) ? y : thread_maxY[tid];
+            }
+        }
+        
+        // 合并各线程结果
+        for (int t = 0; t < num_threads; ++t) {
+            minX = (thread_minX[t] < minX) ? thread_minX[t] : minX;
+            minY = (thread_minY[t] < minY) ? thread_minY[t] : minY;
+            maxX = (thread_maxX[t] > maxX) ? thread_maxX[t] : maxX;
+            maxY = (thread_maxY[t] > maxY) ? thread_maxY[t] : maxY;
+        }
+    } else {
+        for (int i = 1; i < num_original_nodes; ++i) {
+            double x = nodes[i * 2];
+            double y = nodes[i * 2 + 1];
+            minX = (x < minX) ? x : minX;
+            minY = (y < minY) ? y : minY;
+            maxX = (x > maxX) ? x : maxX;
+            maxY = (y > maxY) ? y : maxY;
+        }
     }
 
     // Expand bounding box
@@ -163,8 +243,8 @@ void DelaunayTriangulation::triangulate() {
     int v2 = num_original_nodes + 2;
     int v3 = num_original_nodes + 3;
     
-    triangles.push_back(makeCounterClockwise(v0, v1, v2));
-    triangles.push_back(makeCounterClockwise(v0, v2, v3));
+    triangles.emplace_back(makeCounterClockwise(v0, v1, v2));
+    triangles.emplace_back(makeCounterClockwise(v0, v2, v3));
 
     // Incrementally add each point
     for (int i = 0; i < num_original_nodes; ++i) {

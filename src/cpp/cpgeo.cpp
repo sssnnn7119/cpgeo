@@ -1,5 +1,5 @@
 #include "cpgeo.h"
-#include "triangular_mesh.h"
+#include "triangulation.h"
 #include <memory>
 
 extern "C" {
