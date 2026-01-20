@@ -111,7 +111,6 @@ CPGEO_API int space_tree_query_compute(
     cpgeo_handle_t handle,
     const double* query_points,
     int num_queries,
-    int* num_results,
     int* total_results
 );
 
@@ -120,13 +119,15 @@ CPGEO_API int space_tree_query_compute(
  * 
  * @param handle The SpaceTree handle
  * @param num_results Total number of results from query_compute
- * @param results Output array for results (size: 2 * num_results), format: [query_idx0, query_idx1, ..., knot_idx0, knot_idx1, ...]
+ * @param indices_cps Output array for knot point indices (size: num_results)
+ * @param indices_pts Output array for query point indices (size: num_pts + 1), where indices_pts[i] gives the start index in indices_cps for query i
  * @return 0 on success, non-zero on error
  */
 CPGEO_API int space_tree_query_get(
-    cpgeo_handle_t handle,
+    cpgeo_handle_t tree,
     int num_results,
-    int* results
+    int* indices_cps,
+    int* indices_pts
 );
 
 /**
@@ -137,6 +138,100 @@ CPGEO_API int space_tree_query_get(
 CPGEO_API void space_tree_destroy(
     cpgeo_handle_t handle
 );
+
+/**
+ * @brief Compute influence thresholds for knots based on k-nearest neighbors
+ * 
+ * @param knots Flat array of 3D knot coordinates [x0, y0, z0, x1, y1, z1, ...]
+ * @param num_knots Number of knots (points)
+ * @param k The k-nearest neighbor to consider
+ * @param out_thresholds Output array to store computed thresholds (size: num_knots)
+ */
+CPGEO_API void cpgeo_compute_thresholds(
+    const double* knots,
+    int num_knots,
+    int k,
+    double* out_thresholds
+);
+
+/**
+ * @brief Compute weights for query points based on knot influences
+ * 
+ * @param indices Flat array of (query_idx, knot_idx) pairs (size: num_indices * 2)
+ * @param num_indices Number of index pairs
+ * @param knots Flat array of 3D knot coordinates [x0, y0, z0, x1, y1, z1, ...]
+ * @param num_knots Number of knots (points)
+ * @param thresholds Array of influence radii for each knot
+ * @param query_points Flat array of 3D query coordinates [x0, y0, z0, x1, y1, z1, ...]
+ * @param num_queries Number of query points
+ * @param out_weights Output array to store computed weights (size: num_indices)
+ */
+CPGEO_API void cpgeo_get_weights(
+    const int* indices_cps,
+    const int* indices_pts,
+    int num_indices,
+    const double* knots,
+    int num_knots,
+    const double* thresholds,
+    const double* query_points,
+    int num_queries,
+    double* out_weights
+);
+
+/**
+ * @brief Compute weights and first derivatives for query points based on knot influences
+ * 
+ * @param indices Flat array of (query_idx, knot_idx) pairs (size: num_indices * 2)
+ * @param num_indices Number of index pairs
+ * @param knots Flat array of 3D knot coordinates [x0, y0, z0, x1, y1, z1, ...]
+ * @param num_knots Number of knots (points)
+ * @param thresholds Array of influence radii for each knot
+ * @param query_points Flat array of 3D query coordinates [x0, y0, z0, x1, y1, z1, ...]
+ * @param num_queries Number of query points
+ * @param out_weights Output array to store computed weights (size: num_indices)
+ * @param out_weights_du Output array to store first derivatives (size: num_indices * 2)
+ */
+CPGEO_API void cpgeo_get_weights_derivative1(
+    const int* indices_cps,
+    const int* indices_pts,
+    int num_indices,
+    const double* knots,
+    int num_knots,
+    const double* thresholds,
+    const double* query_points,
+    int num_queries,
+    double* out_weights,
+    double* out_weights_du
+);
+
+/**
+ * @brief Compute weights and first derivatives for query points based on knot influences
+ *
+ * @param indices Flat array of (query_idx, knot_idx) pairs (size: num_indices * 2)
+ * @param num_indices Number of index pairs
+ * @param knots Flat array of 3D knot coordinates [x0, y0, z0, x1, y1, z1, ...]
+ * @param num_knots Number of knots (points)
+ * @param thresholds Array of influence radii for each knot
+ * @param query_points Flat array of 3D query coordinates [x0, y0, z0, x1, y1, z1, ...]
+ * @param num_queries Number of query points
+ * @param out_weights Output array to store computed weights (size: num_indices)
+ * @param out_weights_du Output array to store first derivatives (size: num_indices * 2)
+ * @param out_weights_du2 Output array to store second derivatives (size: num_indices * 2 * 2)
+ */
+CPGEO_API void cpgeo_get_weights_derivative2(
+    const int* indices_cps,
+    const int* indices_pts,
+    int num_indices,
+    const double* knots,
+    int num_knots,
+    const double* thresholds,
+    const double* query_points,
+    int num_queries,
+    double* out_weights,
+    double* out_weights_du,
+    double* out_weights_du2
+);
+
 
 #ifdef __cplusplus
 }

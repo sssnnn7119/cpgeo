@@ -166,9 +166,10 @@ const SpaceTree::Node* SpaceTree::find_leaf_node(double x, double y, double z) c
     return current;
 }
 
-void SpaceTree::query_point(std::vector<int>& results, double x, double y, double z) const {
+std::vector<int> SpaceTree::query_point(double x, double y, double z) const {
     const Node* leaf = find_leaf_node(x, y, z);
-    
+    std::vector<int> results;
+    results.reserve(leaf->point_indices.size());
     for (int idx : leaf->point_indices) {
         double kx = knots_storage[idx * 3];
         double ky = knots_storage[idx * 3 + 1];
@@ -183,9 +184,10 @@ void SpaceTree::query_point(std::vector<int>& results, double x, double y, doubl
             results.push_back(idx);
         }
     }
+    return results;
 }
 
-void SpaceTree::compute_indices(const std::span<const double> query_points) {
+void SpaceTree::compute_indices_batch(const std::span<const double> query_points) {
     size_t num_pts = query_points.size() / 3;
     
     // We must ensure the outer vector has the correct size
@@ -201,7 +203,7 @@ void SpaceTree::compute_indices(const std::span<const double> query_points) {
         double x = query_points[i * 3];
         double y = query_points[i * 3 + 1];
         double z = query_points[i * 3 + 2];
-        query_point(this->query_results[i], x, y, z);
+        query_results[i] = query_point(x, y, z);
     }
 }
 

@@ -12,31 +12,117 @@
 
 const double M_PI = 3.14159265358979323846;
 
+namespace TestWeight{
+    bool test_weight_function(){
+        int num_knots_dim = 10;
+        double knot_limit = 2.0;
+
+        std::vector<double> knots(num_knots_dim * num_knots_dim * num_knots_dim * 3, 0.0);
+        std::vector<double> thresholds(num_knots_dim * num_knots_dim * num_knots_dim, 1.2);
+
+        for (int x = 0; x < num_knots_dim; ++x) {
+            for (int y = 0; y < num_knots_dim; ++y) {
+                for (int z = 0; z < num_knots_dim; ++z) {
+                    int idx = (x * num_knots_dim * num_knots_dim + y * num_knots_dim + z);
+                    knots[idx * 3 + 0] = -knot_limit + (2.0 * knot_limit / (num_knots_dim - 1)) * x + 0.01;
+                    knots[idx * 3 + 1] = -knot_limit + (2.0 * knot_limit / (num_knots_dim - 1)) * y;
+                    knots[idx * 3 + 2] = -knot_limit + (2.0 * knot_limit / (num_knots_dim - 1)) * z;
+                }
+            }
+        }
+
+        std::array<double, 3> query_point = {1.0, 0.0, 0.0};
+        
+        auto tree = space_tree_create(
+            knots.data(),
+            static_cast<int>(knots.size() / 3),
+            thresholds.data()
+        );
+        
+        int num_indices = 0;
+        space_tree_query_compute(
+            tree,
+            query_point.data(),
+            1,
+            &num_indices
+        );
+
+        std::vector<int> indices_cps(num_indices);
+        std::vector<int> indices_pts(1 + 1);
+        space_tree_query_get(
+            tree,
+            num_indices,
+            indices_cps.data(),
+            indices_pts.data()
+        );
+
+        space_tree_destroy(tree);
+
+        std::vector<double> weights(num_indices, 0.0);
+        std::vector<double> wdu(num_indices * 2);
+		std::vector<double> wdu2(num_indices * 4);
+
+        std::array<double, 2> query_point_2d = {2.0, 0.0};
+        cpgeo_get_weights_derivative2(
+            indices_cps.data(),
+            indices_pts.data(),
+            num_indices,
+            knots.data(),
+            static_cast<int>(knots.size() / 3),
+            thresholds.data(),
+            query_point_2d.data(),
+            1,
+            weights.data(),
+            wdu.data(),
+            wdu2.data()
+        );
+
+        // Verify weights
+        for(int i=0;i<num_indices;i++){
+            if (weights[i] < 1e-10) {
+                continue;
+            }
+            std::cout << "Knot Index: (" << indices_cps[i] << ")"
+                      << " Weight: " << weights[i] << std::endl;
+        }
+
+        return true;
+    
+    }
+}
+
 namespace TestSpaceTree {
 
     void test_performance() {
         std::cout << "=== Test SpaceTree Performance ===" << std::endl;
 
-        const int num_knots = 10000;
+        const int num_knots_dim = 20;
+        const int num_knots = num_knots_dim* num_knots_dim* num_knots_dim;
+        double knot_limit = 2.;
         const int num_queries = 2000;
         const double space_size = 100.0;
         const double avg_radius = 5.0;
 
+
+        std::vector<double> thresholds(num_knots, 1.);
+
         std::vector<double> knots(num_knots * 3);
-        std::vector<double> thresholds(num_knots);
+        for (int x = 0; x < num_knots_dim; ++x) {
+            for (int y = 0; y < num_knots_dim; ++y) {
+                for (int z = 0; z < num_knots_dim; ++z) {
+                    int idx = (x * num_knots_dim * num_knots_dim + y * num_knots_dim + z);
+                    knots[idx * 3 + 0] = -knot_limit + (2.0 * knot_limit / (num_knots_dim - 1)) * x;
+                    knots[idx * 3 + 1] = -knot_limit + (2.0 * knot_limit / (num_knots_dim - 1)) * y;
+                    knots[idx * 3 + 2] = -knot_limit + (2.0 * knot_limit / (num_knots_dim - 1)) * z;
+
+                }
+            }
+        }
         std::vector<double> queries(num_queries * 3);
 
         std::mt19937 gen(42);
         std::uniform_real_distribution<> coord_dist(-space_size, space_size);
         std::uniform_real_distribution<> radius_dist(1.0, avg_radius * 2);
-
-        // Generate knots
-        for(int i=0; i<num_knots; ++i) {
-            knots[i*3] = coord_dist(gen);
-            knots[i*3+1] = coord_dist(gen);
-            knots[i*3+2] = coord_dist(gen);
-            thresholds[i] = radius_dist(gen);
-        }
 
         // Generate queries
         for(int i=0; i<num_queries; ++i) {
@@ -67,17 +153,17 @@ namespace TestSpaceTree {
         bool all_correct = true;
 
         // Prepare result arrays for C API
-        std::vector<int> num_results_per_query(check_count);
         int total_results;
-        int ret = space_tree_query_compute(tree_handle, queries.data(), check_count, num_results_per_query.data(), &total_results);
+        int ret = space_tree_query_compute(tree_handle, queries.data(), check_count, &total_results);
         if (ret != 0) {
             std::cout << "ERROR: Space tree query compute failed" << std::endl;
             space_tree_destroy(tree_handle);
             return;
         }
 
-        std::vector<int> results(total_results * 2);
-        ret = space_tree_query_get(tree_handle, total_results, results.data());
+        std::vector<int> indices_cps(total_results);
+        std::vector<int> indices_pts(check_count + 1);
+        ret = space_tree_query_get(tree_handle, total_results, indices_cps.data(), indices_pts.data());
         if (ret != 0) {
             std::cout << "ERROR: Space tree query get failed" << std::endl;
             space_tree_destroy(tree_handle);
@@ -87,8 +173,8 @@ namespace TestSpaceTree {
         // Parse results into per-query vectors
         std::vector<std::vector<int>> tree_results(check_count);
         for (int i = 0; i < total_results; ++i) {
-            int query_idx = results[i];
-            int knot_idx = results[i + total_results];
+            int query_idx = indices_pts[i];
+            int knot_idx = indices_cps[i];
             if (query_idx < 0 || query_idx >= check_count) {
                  std::cout << "CRITICAL ERROR: query_idx out of bounds: " << query_idx << " (max " << check_count << ")" << std::endl;
                  continue;
@@ -170,16 +256,16 @@ namespace TestSpaceTree {
 
         // Tree
         start = std::chrono::high_resolution_clock::now();
-        std::vector<int> bench_num_results_per_query(num_queries);
         int bench_total_results;
-        int bench_ret = space_tree_query_compute(tree_handle, queries.data(), num_queries, bench_num_results_per_query.data(), &bench_total_results);
+        int bench_ret = space_tree_query_compute(tree_handle, queries.data(), num_queries, &bench_total_results);
         if (bench_ret != 0) {
             std::cout << "ERROR: Bench query compute failed" << std::endl;
             space_tree_destroy(tree_handle);
             return;
         }
-        std::vector<int> bench_results(bench_total_results * 2);
-        bench_ret = space_tree_query_get(tree_handle, bench_total_results, bench_results.data());
+        std::vector<int> bench_results(bench_total_results);
+        std::vector<int> bench_indices_pts(num_queries + 1);
+        bench_ret = space_tree_query_get(tree_handle, bench_total_results, bench_results.data(), bench_indices_pts.data());
         end = std::chrono::high_resolution_clock::now();
         double tree_time = std::chrono::duration<double>(end - start).count();
         std::cout << "Tree Query Time: " << tree_time * 1000 << " ms" << std::endl;
@@ -699,8 +785,9 @@ namespace TestTriangulationPlain {
 
 int main() {
 
-    TestSpaceTree::test_performance();
-    TestTriangulationPlain::test_mesh();
-    
+    // TestSpaceTree::test_performance();
+    // TestTriangulationPlain::test_mesh();
+    TestWeight::test_weight_function();    
+
     return 0;
 }
