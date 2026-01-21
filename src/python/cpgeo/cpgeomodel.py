@@ -1,6 +1,5 @@
 import numpy as np
 from . import capi
-from .utils import mesh as _mesh_methods
 
 class CPGEO:
 

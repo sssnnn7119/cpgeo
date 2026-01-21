@@ -781,13 +781,36 @@ namespace TestTriangulationPlain {
 }
 }
 
+namespace TestEdgeRefinement{
 
+    void test_refinement() {
+        std::cout << "=== Test Edge Refinement ===" << std::endl;
+        std::vector<double> vertices = {0.5,0.0,1.5,0.0,1.5,1.5,0.5,1.5};
+        std::vector<int> edges = {0,1,1,2,2,3,3,0, 0,2};
+        int num_indices;
+        mesh_closure_edge_length_derivative2_compute(vertices.data(), 4, 2, edges.data(), 5, &num_indices);
+
+        double loss = 0.0;
+        std::vector<double> Ldr(vertices.size(), 0.0);
+        std::vector<int> Ldr2_indices(num_indices * 4);
+        std::vector<double> Ldr2_values(num_indices);
+
+        int result = mesh_closure_edge_length_derivative2_get(&loss, Ldr.data(), Ldr2_indices.data(), Ldr2_values.data());
+
+        // Output ldr2 in COO format
+        std::cout << "ldr2 in COO format:" << std::endl;
+        for (size_t i = 0; i < Ldr2_values.size(); ++i) {
+            std::cout << Ldr2_indices[i * 4] << " " << Ldr2_indices[i * 4 + 1] << " " << Ldr2_indices[i * 4 + 2] << " " << Ldr2_indices[i * 4 + 3] << " " << Ldr2_values[i] << std::endl;
+        }
+    }
+}
 
 int main() {
 
     // TestSpaceTree::test_performance();
     // TestTriangulationPlain::test_mesh();
-    TestWeight::test_weight_function();    
+    // TestWeight::test_weight_function();   
+    TestEdgeRefinement::test_refinement(); 
 
     return 0;
 }

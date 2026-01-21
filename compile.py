@@ -54,6 +54,11 @@ def complile_cpp(compile_mode: str = 'Release'):
     # 构建目录
     BUILD_DIR = ROOT / "build"
 
+    # # 删除旧的构建目录（如果存在）
+    # if BUILD_DIR.exists():
+    #     import shutil
+    #     shutil.rmtree(BUILD_DIR)
+
     # 创建构建目录
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 

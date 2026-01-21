@@ -452,66 +452,6 @@ extern "C" {
         }
     }
 
-    // Global storage for mesh partition results
-    // static cpgeo::MeshPartition partition_result;
-
-    // CPGEO_API void mesh_partition_sphere_compute(
-    //     const int* triangles,
-    //     int num_triangles,
-    //     int num_vertices,
-    //     int* out_num_hemisphere1,
-    //     int* out_num_hemisphere2,
-    //     int* out_num_cut_vertices
-    // ) {
-    //     if (!triangles || !out_num_hemisphere1 || !out_num_hemisphere2 || !out_num_cut_vertices) {
-    //         return;
-    //     }
-
-    //     try {
-    //         std::span<const int> triangles_span(triangles, num_triangles * 3);
-    //         partition_result = cpgeo::partitionSphereMesh(triangles_span, num_vertices);
-            
-    //         *out_num_hemisphere1 = static_cast<int>(partition_result.hemisphere1_faces.size() / 3);
-    //         *out_num_hemisphere2 = static_cast<int>(partition_result.hemisphere2_faces.size() / 3);
-    //         *out_num_cut_vertices = static_cast<int>(partition_result.cut_vertices.size());
-    //     } catch (...) {
-    //         *out_num_hemisphere1 = 0;
-    //         *out_num_hemisphere2 = 0;
-    //         *out_num_cut_vertices = 0;
-    //     }
-    // }
-
-    // CPGEO_API int mesh_partition_sphere_get(
-    //     int* hemisphere1_triangles,
-    //     int* hemisphere2_triangles,
-    //     int* cut_vertices
-    // ) {
-    //     if (!hemisphere1_triangles || !hemisphere2_triangles || !cut_vertices) {
-    //         return -1;
-    //     }
-
-    //     try {
-    //         std::copy(partition_result.hemisphere1_faces.begin(), 
-    //                  partition_result.hemisphere1_faces.end(), 
-    //                  hemisphere1_triangles);
-    //         std::copy(partition_result.hemisphere2_faces.begin(), 
-    //                  partition_result.hemisphere2_faces.end(), 
-    //                  hemisphere2_triangles);
-    //         std::copy(partition_result.cut_vertices.begin(), 
-    //                  partition_result.cut_vertices.end(), 
-    //                  cut_vertices);
-            
-    //         // Clear the results after retrieval
-    //         partition_result = cpgeo::MeshPartition{};
-    //         return 0;
-    //     } catch (...) {
-    //         return -1;
-    //     }
-    // }
-
-
-
-
     // Global storage for boundary loops results
     static std::vector<std::vector<int>> boundary_loops;
 
@@ -569,5 +509,80 @@ extern "C" {
         }
     }
 
+
+    CPGEO_API void mesh_closure_edge_length_derivative0(
+        const double* vertices,
+        int num_vertices,
+        int vertices_dim,
+        const int* edges,
+        int num_edges,
+        double* out_loss
+    ) {
+        if (!vertices || !edges || !out_loss || vertices_dim <= 0 || num_edges <= 0) {
+            return;
+        }
+
+        try {
+            std::span<const double> vertices_span(vertices, vertices_dim * num_vertices);
+            std::span<const int> edges_span(edges, num_edges * 2);
+            double loss = cpgeo::closure_edge_length_derivative0(vertices_span, vertices_dim, edges_span, 0);
+            *out_loss = loss;
+        } catch (...) {
+            return;
+        }
+    }
+
+    static std::tuple<double, std::vector<double>, std::vector<int>, std::vector<double>> closure_result;
+    CPGEO_API void mesh_closure_edge_length_derivative2_compute(
+        const double* vertices,
+        int num_vertices,
+        int vertices_dim,
+        const int* edges,
+        int num_edges,
+        int* num_out_ldr2
+    ) {
+        if (!vertices || !edges || !num_out_ldr2 ||
+            vertices_dim <= 0 || num_edges <= 0) {
+            return;
+        }
+
+        try {
+            std::span<const double> vertices_span(vertices, vertices_dim * num_vertices);
+            std::span<const int> edges_span(edges, num_edges * 2);
+            closure_result = cpgeo::closure_edge_length_derivative2(vertices_span, vertices_dim, edges_span, 2);
+            *num_out_ldr2 = static_cast<int>(std::get<3>(closure_result).size());
+        } catch (...) {
+            return;
+        }
+    }
+
+    CPGEO_API int mesh_closure_edge_length_derivative2_get(
+        double* out_loss,
+        double* out_ldr,
+        int* out_ldr2_indices,
+        double* out_ldr2_values
+    ) {
+        if (!out_loss || !out_ldr || !out_ldr2_indices || !out_ldr2_values) {
+            return -1;
+        }
+
+        try {
+            *out_loss = std::get<0>(closure_result);
+            const auto& ldr = std::get<1>(closure_result);
+            const auto& ldr2_indices = std::get<2>(closure_result);
+            const auto& ldr2_values = std::get<3>(closure_result);
+
+            std::copy(ldr.begin(), ldr.end(), out_ldr);
+            std::copy(ldr2_indices.begin(), ldr2_indices.end(), out_ldr2_indices);
+            std::copy(ldr2_values.begin(), ldr2_values.end(), out_ldr2_values);
+
+            // Clear stored result
+            closure_result = {};
+
+            return 0;
+        } catch (...) {
+            return -1;
+        }
+    }
 
 }  // extern "C"

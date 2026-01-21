@@ -203,6 +203,37 @@ _lib.mesh_extract_boundary_loops_get.argtypes = [
 ]
 _lib.mesh_extract_boundary_loops_get.restype = ctypes.c_int
 
+# mesh_closure_edge_length_derivative0
+_lib.mesh_closure_edge_length_derivative0.argtypes = [
+    ctypes.POINTER(ctypes.c_double),  # vertices
+    ctypes.c_int,                     # num_vertices
+    ctypes.c_int,                     # vertices_dim
+    ctypes.POINTER(ctypes.c_int),     # edges
+    ctypes.c_int,                     # num_edges
+    ctypes.POINTER(ctypes.c_double)   # out_loss
+]
+_lib.mesh_closure_edge_length_derivative0.restype = None
+
+# mesh_closure_edge_length_derivative2_compute
+_lib.mesh_closure_edge_length_derivative2_compute.argtypes = [
+    ctypes.POINTER(ctypes.c_double),  # vertices
+    ctypes.c_int,                     # num_vertices
+    ctypes.c_int,                     # vertices_dim
+    ctypes.POINTER(ctypes.c_int),     # edges
+    ctypes.c_int,                     # num_edges
+    ctypes.POINTER(ctypes.c_int)      # num_out_ldr2
+]
+_lib.mesh_closure_edge_length_derivative2_compute.restype = None
+
+# mesh_closure_edge_length_derivative2_get
+_lib.mesh_closure_edge_length_derivative2_get.argtypes = [
+    ctypes.POINTER(ctypes.c_double),  # out_loss
+    ctypes.POINTER(ctypes.c_double),  # out_ldr
+    ctypes.POINTER(ctypes.c_int),     # out_ldr2_indices
+    ctypes.POINTER(ctypes.c_double)   # out_ldr2_values
+]
+_lib.mesh_closure_edge_length_derivative2_get.restype = ctypes.c_int
+
 # mesh_free_loop_sizes
 # _lib.mesh_free_loop_sizes.argtypes = [
 #     ctypes.POINTER(ctypes.c_int)      # loop_sizes
@@ -702,6 +733,108 @@ def extract_boundary_loops(triangles: np.ndarray) -> List[np.ndarray]:
     return loops
 
 
+def get_mesh_closure_edge_length_derivative0(vertices: np.ndarray, edges: np.ndarray) -> float:
+    """Compute closure edge length loss.
+    
+    Args:
+        vertices: Array of vertex coordinates (shape: [num_vertices, vertices_dim])
+        edges: Array of edge vertex indices (shape: [num_edges, 2])
+    
+    Returns:
+        float: The computed loss value
+    """
+    if vertices.ndim != 2:
+        raise ValueError("vertices must be a 2D array with shape [num_vertices, vertices_dim]")
+    
+    if edges.ndim != 2 or edges.shape[1] != 2:
+        raise ValueError("edges must be a 2D array with shape [num_edges, 2]")
+    
+    num_vertices, vertices_dim = vertices.shape
+    num_edges = edges.shape[0]
+    
+    vertices_flat = np.ascontiguousarray(vertices.flatten(), dtype=np.float64)
+    vertices_ptr = vertices_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    
+    edges_flat = np.ascontiguousarray(edges.flatten(), dtype=np.int32)
+    edges_ptr = edges_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    
+    out_loss = np.zeros(1, dtype=np.float64)
+    out_loss_ptr = out_loss.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    
+    _lib.mesh_closure_edge_length_derivative0(
+        vertices_ptr,
+        ctypes.c_int(num_vertices),
+        ctypes.c_int(vertices_dim),
+        edges_ptr,
+        ctypes.c_int(num_edges),
+        out_loss_ptr
+    )
+    
+    return out_loss[0]
+
+
+def get_mesh_closure_edge_length_derivative2(vertices: np.ndarray, edges: np.ndarray) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute closure edge length loss and its second derivative.
+    
+    Args:
+        vertices: Array of vertex coordinates (shape: [num_vertices, vertices_dim])
+        edges: Array of edge vertex indices (shape: [num_edges, 2])
+    
+    Returns:
+        Tuple[float, np.ndarray, np.ndarray, np.ndarray]: 
+            - loss: The computed loss value
+            - ldr: First derivative array (shape: [num_vertices, vertices_dim])
+            - ldr2_indices: Second derivative indices in COO format (shape: [num_out_ldr2, 4])
+            - ldr2_values: Second derivative values in COO format (shape: [num_out_ldr2])
+    """
+    if vertices.ndim != 2:
+        raise ValueError("vertices must be a 2D array with shape [num_vertices, vertices_dim]")
+    
+    if edges.ndim != 2 or edges.shape[1] != 2:
+        raise ValueError("edges must be a 2D array with shape [num_edges, 2]")
+    
+    num_vertices, vertices_dim = vertices.shape
+    num_edges = edges.shape[0]
+    
+    vertices_flat = np.ascontiguousarray(vertices.flatten(), dtype=np.float64)
+    vertices_ptr = vertices_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    
+    edges_flat = np.ascontiguousarray(edges.flatten(), dtype=np.int32)
+    edges_ptr = edges_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    
+    num_out_ldr2 = ctypes.c_int()
+    
+    _lib.mesh_closure_edge_length_derivative2_compute(
+        vertices_ptr,
+        ctypes.c_int(num_vertices),
+        ctypes.c_int(vertices_dim),
+        edges_ptr,
+        ctypes.c_int(num_edges),
+        ctypes.byref(num_out_ldr2)
+    )
+    
+    out_loss = np.zeros(1, dtype=np.float64)
+    out_loss_ptr = out_loss.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    
+    out_ldr = np.zeros(num_vertices * vertices_dim, dtype=np.float64)
+    out_ldr_ptr = out_ldr.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    
+    out_ldr2_indices = np.zeros(num_out_ldr2.value * 4, dtype=np.int32)
+    out_ldr2_indices_ptr = out_ldr2_indices.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    
+    out_ldr2_values = np.zeros(num_out_ldr2.value, dtype=np.float64)
+    out_ldr2_values_ptr = out_ldr2_values.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    
+    result = _lib.mesh_closure_edge_length_derivative2_get(
+        out_loss_ptr,
+        out_ldr_ptr,
+        out_ldr2_indices_ptr,
+        out_ldr2_values_ptr
+    )
+    
+    return out_loss[0], out_ldr.reshape(num_vertices, vertices_dim), out_ldr2_indices.reshape(-1, 4), out_ldr2_values
+
+
 __all__ = [
     'get_triangulation',
     'get_sphere_triangulation',
@@ -715,4 +848,6 @@ __all__ = [
     'get_mapped_points',
     'get_mesh_edges',
     'extract_boundary_loops',
+    'get_mesh_closure_edge_length_derivative0',
+    'get_mesh_closure_edge_length_derivative2',
 ]
