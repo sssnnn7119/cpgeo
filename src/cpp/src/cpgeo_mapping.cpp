@@ -311,7 +311,7 @@ std::tuple<std::vector<double>, Tensor2D> get_weights_derivative1(
 
 
 
-    return std::tuple<std::vector<double>, Tensor2D>(weights, std::move(rdudot));
+    return std::tuple<std::vector<double>, Tensor2D>(rdot, std::move(rdudot));
 }
 
 std::tuple<std::vector<double>, Tensor2D, Tensor3D> get_weights_derivative2(
@@ -437,7 +437,7 @@ std::tuple<std::vector<double>, Tensor2D, Tensor3D> get_weights_derivative2(
 
 
 
-    return std::tuple<std::vector<double>, Tensor2D, Tensor3D>(weights, std::move(rdudot), std::move(rdudot2));
+    return std::tuple<std::vector<double>, Tensor2D, Tensor3D>(rdot, std::move(rdudot), std::move(rdudot2));
 }
 
 }

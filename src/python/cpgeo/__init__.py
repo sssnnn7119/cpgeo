@@ -1,3 +1,2 @@
-from . import surface
-from . import utils
-from .base import _CPGEO_base
+from . import capi
+from .cpgeomodel import CPGEO

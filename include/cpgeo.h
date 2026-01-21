@@ -14,8 +14,6 @@
 extern "C" {
 #endif
 
-
-
 /**
  * @brief Handle type for opaque CPGEO objects
  */
@@ -232,6 +230,108 @@ CPGEO_API void cpgeo_get_weights_derivative2(
     double* out_weights_du2
 );
 
+/**
+ * @brief Compute mapped points from control points using sparse weights
+ *
+ * This function computes the final mapped coordinates by applying weights to control points.
+ * It performs the sparse matrix multiplication: mapped_points[i] = sum(weights[j] * controlpoints[indices_cps[j]])
+ * for all j where indices_pts[i] <= j < indices_pts[i+1]
+ *
+ * @param indices_cps Array of control point indices for each weight (size: num_indices)
+ * @param indices_pts Array of starting indices for each query point (size: num_queries + 1)
+ * @param num_indices Total number of weight entries
+ * @param weights Array of weight values (size: num_indices)
+ * @param controlpoints Flat array of 3D control point coordinates [x0,y0,z0,x1,y1,z1,...]
+ * @param num_controlpoints Number of control points
+ * @param num_queries Number of query points
+ * @param out_mapped_points Output array for mapped coordinates (size: num_queries * 3)
+ */
+CPGEO_API void cpgeo_get_mapped_points(
+    const int* indices_cps,
+    const int* indices_pts,
+    int num_indices,
+    const double* weights,
+    const double* controlpoints,
+    int num_controlpoints,
+    int num_queries,
+    double* out_mapped_points
+);
+
+
+// ==============================================================================================================
+// ================== Mesh Utilities ============================================================================
+// ==============================================================================================================
+
+
+/**
+ * @brief Compute mesh edges from triangular elements
+ * 
+ * @param elements Input array of triangle vertex indices (size: num_elements * 3)
+ * @param num_elements Number of triangular elements
+ * @param out_num_edges Output pointer to receive the number of unique edges
+ */
+CPGEO_API void mesh_edges_compute(
+        const int* elements,
+        int num_elements,
+        int* out_num_edges
+);
+
+/**
+ * @brief Retrieve computed mesh edges
+ * 
+ * @param out_edges Output array to store edge vertex indices and counts (size: out_num_edges * 3)
+ *                   Each edge is represented by (vertex1, vertex2, count)
+ * @return 0 on success, non-zero on error
+ */
+CPGEO_API int mesh_edges_get(
+    int* out_edges
+);
+
+/**
+ * @brief Partition a sphere-like mesh into two disk-like hemispheres
+ * 
+ * Divides a closed triangular mesh (topologically equivalent to a sphere) into two regions,
+ * each topologically equivalent to a disk. The partition attempts to balance the number of
+ * faces in each hemisphere.
+ * 
+ * @param triangles Input array of triangle vertex indices (size: num_triangles * 3)
+ * @param num_triangles Number of triangular faces
+ * @param num_vertices Total number of vertices in the mesh
+ * @param out_num_hemisphere1 Output pointer to receive number of triangles in first hemisphere
+ * @param out_num_hemisphere2 Output pointer to receive number of triangles in second hemisphere
+ * @param out_num_cut_vertices Output pointer to receive number of vertices on cutting boundary
+ */
+
+/**
+ * @brief Extract all boundary loops from a triangular mesh
+ * 
+ * A boundary edge is an edge that belongs to only one triangle.
+ * This function finds all closed boundary loops and returns them as ordered vertex sequences.
+ * 
+ * @param triangles Input array of triangle vertex indices (size: num_triangles * 3)
+ * @param num_triangles Number of triangular faces
+ * @param num_boundary_vertices Output pointer to receive total number of boundary vertices across all loops
+ * @param num_loops Output pointer to receive number of boundary loops found
+ */
+CPGEO_API void mesh_extract_boundary_loops_compute(
+        const int* triangles,
+        int num_triangles,
+        int* num_boundary_vertices,
+        int* num_loops
+
+    );
+
+/**
+ * @brief Retrieve the extracted boundary loops
+ * 
+ * @param out_boundary_vertices Output array for boundary vertex indices (size: num_boundary_vertices)
+ * @param out_loop_indices Output array for loop starting indices (size: num_loops + 1)
+ * @return 0 on success, non-zero on error
+ */
+CPGEO_API int mesh_extract_boundary_loops_get(
+        int* out_boundary_vertices,
+        int* out_loop_indices
+    );
 
 #ifdef __cplusplus
 }
