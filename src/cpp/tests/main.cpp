@@ -788,7 +788,7 @@ namespace TestEdgeRefinement{
         std::vector<double> vertices = {0.5,0.0,1.5,0.0,1.5,1.5,0.5,1.5};
         std::vector<int> edges = {0,1,1,2,2,3,3,0, 0,2};
         int num_indices;
-        mesh_closure_edge_length_derivative2_compute(vertices.data(), 4, 2, edges.data(), 5, &num_indices);
+        mesh_closure_edge_length_derivative2_compute(vertices.data(), 4, 2, edges.data(), 5, 2, &num_indices);
 
         double loss = 0.0;
         std::vector<double> Ldr(vertices.size(), 0.0);

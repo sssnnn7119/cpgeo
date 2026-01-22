@@ -516,6 +516,7 @@ extern "C" {
         int vertices_dim,
         const int* edges,
         int num_edges,
+        int order,
         double* out_loss
     ) {
         if (!vertices || !edges || !out_loss || vertices_dim <= 0 || num_edges <= 0) {
@@ -525,7 +526,7 @@ extern "C" {
         try {
             std::span<const double> vertices_span(vertices, vertices_dim * num_vertices);
             std::span<const int> edges_span(edges, num_edges * 2);
-            double loss = cpgeo::closure_edge_length_derivative0(vertices_span, vertices_dim, edges_span, 0);
+            double loss = cpgeo::closure_edge_length_derivative0(vertices_span, vertices_dim, edges_span, order);
             *out_loss = loss;
         } catch (...) {
             return;
@@ -539,6 +540,7 @@ extern "C" {
         int vertices_dim,
         const int* edges,
         int num_edges,
+        int order,
         int* num_out_ldr2
     ) {
         if (!vertices || !edges || !num_out_ldr2 ||
@@ -549,7 +551,7 @@ extern "C" {
         try {
             std::span<const double> vertices_span(vertices, vertices_dim * num_vertices);
             std::span<const int> edges_span(edges, num_edges * 2);
-            closure_result = cpgeo::closure_edge_length_derivative2(vertices_span, vertices_dim, edges_span, 2);
+            closure_result = cpgeo::closure_edge_length_derivative2(vertices_span, vertices_dim, edges_span, order);
             *num_out_ldr2 = static_cast<int>(std::get<3>(closure_result).size());
         } catch (...) {
             return;

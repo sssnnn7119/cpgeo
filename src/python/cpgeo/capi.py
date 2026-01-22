@@ -210,6 +210,7 @@ _lib.mesh_closure_edge_length_derivative0.argtypes = [
     ctypes.c_int,                     # vertices_dim
     ctypes.POINTER(ctypes.c_int),     # edges
     ctypes.c_int,                     # num_edges
+    ctypes.c_int,                     # order
     ctypes.POINTER(ctypes.c_double)   # out_loss
 ]
 _lib.mesh_closure_edge_length_derivative0.restype = None
@@ -221,6 +222,7 @@ _lib.mesh_closure_edge_length_derivative2_compute.argtypes = [
     ctypes.c_int,                     # vertices_dim
     ctypes.POINTER(ctypes.c_int),     # edges
     ctypes.c_int,                     # num_edges
+    ctypes.c_int,                     # order
     ctypes.POINTER(ctypes.c_int)      # num_out_ldr2
 ]
 _lib.mesh_closure_edge_length_derivative2_compute.restype = None
@@ -400,8 +402,7 @@ def compute_thresholds(knots: np.ndarray, k: int) -> np.ndarray:
     Returns:
         np.ndarray: Computed thresholds array
     """
-    if knots.ndim != 1 or len(knots) % 3 != 0:
-        raise ValueError("knots must be a 1D array with length multiple of 3")
+    knots = knots.flatten()
     
     num_knots = len(knots) // 3
     knots_flat = np.ascontiguousarray(knots, dtype=np.float64)
@@ -733,7 +734,7 @@ def extract_boundary_loops(triangles: np.ndarray) -> List[np.ndarray]:
     return loops
 
 
-def get_mesh_closure_edge_length_derivative0(vertices: np.ndarray, edges: np.ndarray) -> float:
+def get_mesh_closure_edge_length_derivative0(vertices: np.ndarray, edges: np.ndarray, order: int = 2) -> float:
     """Compute closure edge length loss.
     
     Args:
@@ -767,13 +768,14 @@ def get_mesh_closure_edge_length_derivative0(vertices: np.ndarray, edges: np.nda
         ctypes.c_int(vertices_dim),
         edges_ptr,
         ctypes.c_int(num_edges),
+        ctypes.c_int(order),
         out_loss_ptr
     )
     
     return out_loss[0]
 
 
-def get_mesh_closure_edge_length_derivative2(vertices: np.ndarray, edges: np.ndarray) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray]:
+def get_mesh_closure_edge_length_derivative2(vertices: np.ndarray, edges: np.ndarray, order: int = 2) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray]:
     """Compute closure edge length loss and its second derivative.
     
     Args:
@@ -810,6 +812,7 @@ def get_mesh_closure_edge_length_derivative2(vertices: np.ndarray, edges: np.nda
         ctypes.c_int(vertices_dim),
         edges_ptr,
         ctypes.c_int(num_edges),
+        ctypes.c_int(order),
         ctypes.byref(num_out_ldr2)
     )
     

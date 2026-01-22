@@ -16,9 +16,11 @@ def test_refinement():
     import time
     t0 = time.time()
     loss, ldr, ldr2_indices, ldr2_values = get_mesh_closure_edge_length_derivative2(vertices, edges)
+    loss_ = capi.get_mesh_closure_edge_length_derivative0(vertices, edges)
     t1 = time.time()
     print(f"Computation time: {t1 - t0:.6f} seconds")
 
+    assert np.isclose(loss, loss_), f"Loss mismatch: {loss} vs {loss_}"
     # print(f"Loss: {loss}")
     # print("Ldr:")
     # print(ldr)

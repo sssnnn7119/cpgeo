@@ -334,6 +334,26 @@ CPGEO_API int mesh_extract_boundary_loops_get(
     );
 
 /**
+ * @brief Compute closure edge length loss and its first derivative
+ * @param vertices Input array of vertex coordinates (size: num_vertices * vertices_dim)
+ * @param num_vertices Number of vertices
+ * @param vertices_dim Dimension of each vertex (e.g., 2 for 2D, 3 for 3D)
+ * @param edges Input array of edge vertex indices (size: num_edges * 2)
+ * @param num_edges Number of edges
+ * @param order Order of the length penalty (e.g., 2 for squared length)
+ * @param out_loss Output pointer to receive the computed loss value
+ */
+CPGEO_API void mesh_closure_edge_length_derivative0(
+        const double* vertices,
+        int num_vertices,
+        int vertices_dim,
+        const int* edges,
+        int num_edges,
+        int order,
+        double* out_loss
+);
+
+/**
  * @brief Compute closure edge length loss and its second derivative
  * 
  * @param vertices Input array of vertex coordinates (size: num_vertices * vertices_dim)
@@ -341,6 +361,7 @@ CPGEO_API int mesh_extract_boundary_loops_get(
  * @param vertices_dim Dimension of each vertex (e.g., 2 for 2D, 3 for 3D)
  * @param edges Input array of edge vertex indices (size: num_edges * 2)
  * @param num_edges Number of edges
+ * @param order Order of the length penalty (e.g., 2 for squared length)
  * @param out_loss Output pointer to receive the computed loss value
  */
 CPGEO_API void mesh_closure_edge_length_derivative2_compute(
@@ -349,6 +370,7 @@ CPGEO_API void mesh_closure_edge_length_derivative2_compute(
         int vertices_dim,
         const int* edges,
         int num_edges,
+        int order,
         int* num_out_ldr2
 );
 

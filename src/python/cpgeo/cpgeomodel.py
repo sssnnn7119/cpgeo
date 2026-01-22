@@ -1,6 +1,8 @@
-import numpy as np
-from . import capi
 
+import numpy as np
+
+from . import capi, utils
+import pyvista as pv
 class CPGEO:
 
     def __init__(self, control_points: np.ndarray, cp_faces: np.ndarray, knot_influence_num: int = 20):
@@ -37,6 +39,95 @@ class CPGEO:
         self._thresholds = capi.compute_thresholds(
             knots=self._knots,
             k=self._knot_influence_num,)
+        
+        self._space_tree = capi.space_tree_create(knots=self._knots,
+                                                  thresholds=self._thresholds)
+        
+    def get_weights3(self, query_points: np.ndarray):
+        """
+        Get the weights of control points for given query points.
+
+        Args:
+            query_points (np.ndarray): The query points, shape (N, 3).
+        Returns:
+            np.ndarray: The weights of control points for each query point, shape (N, V).
+        """
+        indices_cps, indices_pts = capi.get_space_tree_query(self._space_tree, query_points)
+
+        points_plane = self.reference_to_curvilinear(query_points)
+
+        w = capi.get_weights(indices_cps=indices_cps,
+                                        indices_pts=indices_pts,
+                                        knots=self._knots,
+                                        thresholds=self._thresholds,
+                                        query_points=points_plane)
+        return indices_cps, indices_pts, w
+    
+    def get_weights2(self, query_points_plane: np.ndarray):
+        """
+        Get the weights of control points for given query points.
+
+        Args:
+            query_points (np.ndarray): The query points, shape (N, 3).
+        Returns:
+            np.ndarray: The weights of control points for each query point, shape (N, V).
+        """
+        query_points = self.curvilinear_to_reference(query_points_plane)[0]
+        indices_cps, indices_pts = capi.get_space_tree_query(self._space_tree, query_points)
+
+
+        w = capi.get_weights_derivative2(indices_cps=indices_cps,
+                                        indices_pts=indices_pts,
+                                        knots=self._knots,
+                                        thresholds=self._thresholds,
+                                        query_points=query_points_plane)[0]
+        return indices_cps, indices_pts, w
+    
+    def map(self, points_plane: np.ndarray):
+        """
+        Map the given points in curvilinear coordinates to reference coordinates.
+
+        Args:
+            points_plane (np.ndarray): The points in curvilinear coordinates, shape (N, 2).
+
+        Returns:
+            np.ndarray: The mapped points in reference coordinates, shape (N, 3).
+        """
+
+        indices_cps, indices_pts, w = self.get_weights2(points_plane)
+        mapped_points_cpp = capi.get_mapped_points(indices_cps, indices_pts, w, self._control_points, points_plane.shape[0])
+
+        return mapped_points_cpp
+    
+    def show(self):
+        r = self.map(self.reference_to_curvilinear(self._knots))
+        coo = self._cp_faces
+
+        mesh = pv.PolyData(r, np.hstack([np.full((coo.shape[0], 1), 3), coo]))
+
+        plotter = pv.Plotter()
+        plotter.add_mesh(mesh, color='lightblue', show_edges=True, opacity=1.0)
+        plotter.show()
+
+    def show_knots(self):
+        r = self._knots
+        coo = self._cp_faces
+
+        mesh = pv.PolyData(r, np.hstack([np.full((coo.shape[0], 1), 3), coo]))
+
+        plotter = pv.Plotter()
+        plotter.add_mesh(mesh, color='lightblue', show_edges=True, opacity=1.0)
+        plotter.show()
+
+    def show_control_points(self):
+        r = self._control_points
+        coo = self._cp_faces
+
+        mesh = pv.PolyData(r, np.hstack([np.full((coo.shape[0], 1), 3), coo]))
+
+        plotter = pv.Plotter()
+        plotter.add_mesh(mesh, color='lightblue', show_edges=True, opacity=1.0)
+        plotter.show()
 
     def curvilinear_to_reference(self, curvilinear_points: np.ndarray,
                                  derivative: int = 0):
@@ -56,7 +147,7 @@ class CPGEO:
                 xdu2 is the second derivative, shape (N, 3, 2, 2)
         """
 
-        num_points = curvilinear_points.shape[1]
+        num_points = curvilinear_points.shape[0]
 
         x = np.zeros([num_points, 3])
         t = 1 / (4 + curvilinear_points[:, 0]**2 + curvilinear_points[:, 1]**2)
@@ -111,7 +202,7 @@ class CPGEO:
             np.ndarray: curvilinear coordinates, shape (N, 2)
         """
 
-        num_points = ref_points.shape[1]
+        num_points = ref_points.shape[0]
 
         x = np.zeros([num_points, 2])
         x[:, 0] = 2 * ref_points[:, 0] / (1 - ref_points[:, 2])
@@ -127,7 +218,7 @@ class CPGEO:
     def _split_mesh(faces: np.ndarray):
         num_points = np.unique(faces.flatten()).shape[0]
 
-        knots_cur = np.random.randn(num_points, 2)
+        
 
         import networkx as nx
 
@@ -161,13 +252,19 @@ class CPGEO:
         
         faces1_index = (np.isin(faces,
                                         index_half1).sum(axis=1) == 3)
-        return index_half1, boundary_points_index[0]
+        return index_half1, boundary_points_index[0], faces1, faces2
 
     def _initialize_knots(self, faces: np.ndarray):
 
         num_points = np.unique(faces.flatten()).shape[0]
 
-        index_half1, boundary_points_index = CPGEO._split_mesh(faces)
+        knots_cur = np.stack([np.linspace(-1, 1, num=int(np.ceil(num_points))),
+                              np.linspace(-1, 1, num=int(np.ceil(num_points)))], axis=1)
+
+        index_half1, boundary_points_index, faces1, faces2 = CPGEO._split_mesh(faces)
+
+        while boundary_points_index[0] != 5:
+            boundary_points_index = np.roll(boundary_points_index, 1)
 
         index_half1_ = np.array(
             list(
@@ -182,10 +279,10 @@ class CPGEO:
             [np.cos(theta), np.sin(theta)], axis=1)
 
         # map from the z+
-        knots_cur = _mesh_methods.edge_length_regularization_surf2D_part(
+        knots_cur = utils.mesh_regulation_2D(
             knots_cur, faces, index_half1_)
 
-        index_extra = np.where(np.linalg.norm(knots_cur, axis=0) > 0.7 * r0)[0]
+        index_extra = np.where(np.linalg.norm(knots_cur, axis=1) > 0.7 * r0)[0]
 
         index_half2 = np.array(
             list((set(range(num_points)) - set(index_half1_.tolist())).union(
@@ -197,23 +294,27 @@ class CPGEO:
         knots_cur = self.reference_to_curvilinear(knots3)
 
         # refine the other semi-sphere
-        knots_cur = _mesh_methods.edge_length_regularization_surf2D_part(
+        knots_cur = utils.mesh_regulation_2D(
             knots_cur, faces, index_half2)
 
         # refine the x+
         knots3 = self.curvilinear_to_reference(knots_cur)[0]
         knots3 = knots3[:, [1,2,0]]
         knots_cur = self.reference_to_curvilinear(knots3)
-        index_now = np.where(knots_cur.norm(dim=0) < knots_cur.norm(dim=0).sort().values[int(knots_cur.shape[1]*2/3)])[0]
-        knots_cur = _mesh_methods.edge_length_regularization_surf2D_part(
+        norms = np.linalg.norm(knots_cur, axis=1)
+        threshold = np.sort(norms)[int(knots_cur.shape[0] * 2 / 3)]
+        index_now = np.where(norms < threshold)[0]
+        knots_cur = utils.mesh_regulation_2D(
             knots_cur, faces, index_now)
         
         # refine the x-
         knots3 = self.curvilinear_to_reference(knots_cur)[0]
         knots3[:, 2] *= -1
         knots_cur = self.reference_to_curvilinear(knots3)
-        index_now = np.where(knots_cur.norm(dim=0) < knots_cur.norm(dim=0).sort().values[int(knots_cur.shape[1]*2/3)])[0]
-        knots_cur = _mesh_methods.edge_length_regularization_surf2D_part(
+        norms = np.linalg.norm(knots_cur, axis=1)
+        threshold = np.sort(norms)[int(knots_cur.shape[0] * 2 / 3)]
+        index_now = np.where(norms < threshold)[0]
+        knots_cur = utils.mesh_regulation_2D(
             knots_cur, faces, index_now)
         
         # refine the y+
@@ -221,24 +322,27 @@ class CPGEO:
         knots3[:, 2] *= -1
         knots3 = knots3[:, [1,2,0]]
         knots_cur = self.reference_to_curvilinear(knots3)
-        index_now = np.where(knots_cur.norm(dim=0) < knots_cur.norm(dim=0).sort().values[int(knots_cur.shape[1]*2/3)])[0]
-        knots_cur = _mesh_methods.edge_length_regularization_surf2D_part(
+        norms = np.linalg.norm(knots_cur, axis=1)
+        threshold = np.sort(norms)[int(knots_cur.shape[0] * 2 / 3)]
+        index_now = np.where(norms < threshold)[0]
+        knots_cur = utils.mesh_regulation_2D(
             knots_cur, faces, index_now)
         
         # refine the y-
         knots3 = self.curvilinear_to_reference(knots_cur)[0]
         knots3[:, 2] *= -1
         knots_cur = self.reference_to_curvilinear(knots3)
-        index_now = np.where(knots_cur.norm(dim=0) < knots_cur.norm(dim=0).sort().values[int(knots_cur.shape[1]*2/3)])[0]
-        knots_cur = _mesh_methods.edge_length_regularization_surf2D_part(
+        norms = np.linalg.norm(knots_cur, axis=1)
+        threshold = np.sort(norms)[int(knots_cur.shape[0] * 2 / 3)]
+        index_now = np.where(norms < threshold)[0]
+        knots_cur = utils.mesh_regulation_2D(
             knots_cur, faces, index_now)
         
         # finally get the knots
         knots3 = self.curvilinear_to_reference(knots_cur)[0]
         knots3 = knots3[:, [1,2,0]]
         
-        self.knots = knots3
-        self.boundary_points_index = np.zeros([0], dtype=np.int64)
+        return knots3
 
 
     @property
@@ -254,3 +358,4 @@ class CPGEO:
         if points.dtype != np.float64:
             points = points.astype(np.float64)
         self._control_points = points
+
