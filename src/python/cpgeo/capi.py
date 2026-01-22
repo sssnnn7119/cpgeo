@@ -236,6 +236,18 @@ _lib.mesh_closure_edge_length_derivative2_get.argtypes = [
 ]
 _lib.mesh_closure_edge_length_derivative2_get.restype = ctypes.c_int
 
+# mesh_optimize_by_edge_flipping
+_lib.mesh_optimize_by_edge_flipping.argtypes = [
+    ctypes.POINTER(ctypes.c_double),  # vertices
+    ctypes.c_int,                     # num_vertices
+    ctypes.c_int,                     # vertices_dim
+    ctypes.POINTER(ctypes.c_int),     # faces_in
+    ctypes.c_int,                     # num_faces
+    ctypes.c_int,                     # max_iterations
+    ctypes.POINTER(ctypes.c_int)      # out_faces
+]
+_lib.mesh_optimize_by_edge_flipping.restype = None
+
 # mesh_free_loop_sizes
 # _lib.mesh_free_loop_sizes.argtypes = [
 #     ctypes.POINTER(ctypes.c_int)      # loop_sizes
@@ -440,7 +452,7 @@ def get_weights(indices_cps: np.ndarray, indices_pts: np.ndarray, knots: np.ndar
 
     num_indices = len(indices_cps)
     num_knots = len(knots) // 3
-    num_queries = len(query_points) // 3
+    num_queries = len(query_points) // 2
     
     # Convert inputs to ctypes
     indices_cps_flat = np.ascontiguousarray(indices_cps, dtype=np.int32)
@@ -838,6 +850,48 @@ def get_mesh_closure_edge_length_derivative2(vertices: np.ndarray, edges: np.nda
     return out_loss[0], out_ldr.reshape(num_vertices, vertices_dim), out_ldr2_indices.reshape(-1, 4), out_ldr2_values
 
 
+def optimize_mesh_by_edge_flipping(vertices: np.ndarray, faces: np.ndarray, max_iterations: int = 100) -> np.ndarray:
+    """Optimize mesh by edge flipping to make triangles more equilateral.
+    
+    Args:
+        vertices: Vertex coordinates array (shape: [num_vertices, vertices_dim])
+        faces: Triangle faces array (shape: [num_faces, 3])
+        max_iterations: Maximum number of optimization iterations (default: 100)
+    
+    Returns:
+        np.ndarray: Optimized triangle faces array (shape: [num_faces, 3])
+    """
+    if vertices.ndim != 2:
+        raise ValueError("vertices must be a 2D array with shape [num_vertices, vertices_dim]")
+    
+    if faces.ndim != 2 or faces.shape[1] != 3:
+        raise ValueError("faces must be a 2D array with shape [num_faces, 3]")
+    
+    num_vertices, vertices_dim = vertices.shape
+    num_faces = faces.shape[0]
+    
+    vertices_flat = np.ascontiguousarray(vertices.flatten(), dtype=np.float64)
+    vertices_ptr = vertices_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    
+    faces_flat = np.ascontiguousarray(faces.flatten(), dtype=np.int32)
+    faces_ptr = faces_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    
+    out_faces = np.zeros(num_faces * 3, dtype=np.int32)
+    out_faces_ptr = out_faces.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    
+    _lib.mesh_optimize_by_edge_flipping(
+        vertices_ptr,
+        ctypes.c_int(num_vertices),
+        ctypes.c_int(vertices_dim),
+        faces_ptr,
+        ctypes.c_int(num_faces),
+        ctypes.c_int(max_iterations),
+        out_faces_ptr
+    )
+    
+    return out_faces.reshape(-1, 3)
+
+
 __all__ = [
     'get_triangulation',
     'get_sphere_triangulation',
@@ -853,4 +907,5 @@ __all__ = [
     'extract_boundary_loops',
     'get_mesh_closure_edge_length_derivative0',
     'get_mesh_closure_edge_length_derivative2',
+    'optimize_mesh_by_edge_flipping',
 ]

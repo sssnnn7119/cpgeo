@@ -3,6 +3,7 @@
 #include "sphere_triangulation.h"
 #include "space_tree.h"
 #include "cpgeo_mapping.h"
+#include "mesh_edge_flip.h"
 #include <memory>
 #include <algorithm>
 #include "tensor.h"
@@ -584,6 +585,34 @@ extern "C" {
             return 0;
         } catch (...) {
             return -1;
+        }
+    }
+
+    CPGEO_API void mesh_optimize_by_edge_flipping(
+        const double* vertices,
+        int num_vertices,
+        int vertices_dim,
+        const int* faces_in,
+        int num_faces,
+        int max_iterations,
+        int* out_faces
+    ) {
+        if (!vertices || !faces_in || !out_faces || num_vertices <= 0 || num_faces <= 0) {
+            return;
+        }
+
+        try {
+            std::span<const double> vertices_span(vertices, num_vertices * vertices_dim);
+            std::span<const int> faces_span(faces_in, num_faces * 3);
+            
+            auto optimized_faces = cpgeo::optimize_mesh_by_edge_flipping(
+                vertices_span, vertices_dim, faces_span, max_iterations
+            );
+            
+            std::copy(optimized_faces.begin(), optimized_faces.end(), out_faces);
+        } catch (...) {
+            // On error, copy input to output
+            std::copy(faces_in, faces_in + num_faces * 3, out_faces);
         }
     }
 

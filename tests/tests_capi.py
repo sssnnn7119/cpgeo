@@ -22,9 +22,6 @@ def timer(name: str, iterations: int = 10):
 def test_space_tree_query_and_weight_computation():
     """测试空间树查询和权重计算的C API接口"""
 
-    import torch
-    import numba as nb
-    from torch.nn import parallel
 
 
     num_knots = 10
@@ -47,17 +44,26 @@ def test_space_tree_query_and_weight_computation():
     t1 = time.time()
     print(f"Tree query time: {t1 - t0} seconds")
 
-    with timer("Weight computation", iterations=10):
-        w, wdu, wdu_2 = cpgeo.capi.get_weights_derivative2(indices_cps=indices_cps,
-                                                        indices_pts=indices_pts,
-                                                        knots=knots,
-                                                        thresholds=threshold,
-                                                        query_points=points_plane)
+    with timer("Weight computation", iterations=100):
+        for _ in range(100):
+            w, wdu, wdu_2 = cpgeo.capi.get_weights_derivative2(indices_cps=indices_cps,
+                                                            indices_pts=indices_pts,
+                                                            knots=knots,
+                                                            thresholds=threshold,
+                                                            query_points=points_plane)
+
+    # verify direct get_weights matches derivative-based weights
+    w_direct = cpgeo.capi.get_weights(indices_cps=indices_cps,
+                                      indices_pts=indices_pts,
+                                      knots=knots,
+                                      thresholds=threshold,
+                                      query_points=points_plane)
+    assert np.allclose(w_direct, w), f"get_weights mismatch with derivative: {w_direct} vs {w}"
 
     controlpoints = knots.copy()
     controlpoints[:, 2] += 10.
 
-    with timer("Mapped points computation C++", iterations=10):
+    with timer("Mapped points computation C++", iterations=1000):
         mapped_points_cpp = cpgeo.capi.get_mapped_points(indices_cps, indices_pts, w, controlpoints, points.shape[0])
 
 

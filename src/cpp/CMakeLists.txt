@@ -10,6 +10,7 @@ add_library(cpgeo SHARED
     src/space_tree.cpp
     src/tensor.cpp
     src/mesh_utils.cpp
+    src/mesh_edge_flip.cpp
     
     # 头文件（让 IDE 能显示和索引）
     include/triangulation.h
@@ -18,6 +19,7 @@ add_library(cpgeo SHARED
     include/space_tree.h
     include/tensor.h
     include/mesh_utils.h
+    include/mesh_edge_flip.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include/cpgeo.h
 )
 

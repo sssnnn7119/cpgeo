@@ -43,7 +43,7 @@ class CPGEO:
         self._space_tree = capi.space_tree_create(knots=self._knots,
                                                   thresholds=self._thresholds)
         
-    def get_weights3(self, query_points: np.ndarray):
+    def get_weights3(self, query_points: np.ndarray, derivative: int = 0):
         """
         Get the weights of control points for given query points.
 
@@ -56,14 +56,30 @@ class CPGEO:
 
         points_plane = self.reference_to_curvilinear(query_points)
 
-        w = capi.get_weights(indices_cps=indices_cps,
-                                        indices_pts=indices_pts,
-                                        knots=self._knots,
-                                        thresholds=self._thresholds,
-                                        query_points=points_plane)
-        return indices_cps, indices_pts, w
+        if derivative == 0:
+            w = capi.get_weights(indices_cps=indices_cps,
+                                            indices_pts=indices_pts,
+                                            knots=self._knots,
+                                            thresholds=self._thresholds,
+                                            query_points=points_plane)
+            return indices_cps, indices_pts, w
+        elif derivative == 1:
+            w, wdu = capi.get_weights_derivative1(indices_cps=indices_cps,
+                                            indices_pts=indices_pts,
+                                            knots=self._knots,
+                                            thresholds=self._thresholds,
+                                            query_points=points_plane)
+            return indices_cps, indices_pts, w, wdu
+        
+        elif derivative == 2:
+            w, wdu, wdu2 = capi.get_weights_derivative2(indices_cps=indices_cps,
+                                            indices_pts=indices_pts,
+                                            knots=self._knots,
+                                            thresholds=self._thresholds,
+                                            query_points=points_plane)
+            return indices_cps, indices_pts, w, wdu, wdu2
     
-    def get_weights2(self, query_points_plane: np.ndarray):
+    def get_weights2(self, query_points_plane: np.ndarray, derivative: int = 0):
         """
         Get the weights of control points for given query points.
 
@@ -76,14 +92,30 @@ class CPGEO:
         indices_cps, indices_pts = capi.get_space_tree_query(self._space_tree, query_points)
 
 
-        w = capi.get_weights_derivative2(indices_cps=indices_cps,
-                                        indices_pts=indices_pts,
-                                        knots=self._knots,
-                                        thresholds=self._thresholds,
-                                        query_points=query_points_plane)[0]
-        return indices_cps, indices_pts, w
+        if derivative == 0:
+            w = capi.get_weights(indices_cps=indices_cps,
+                                            indices_pts=indices_pts,
+                                            knots=self._knots,
+                                            thresholds=self._thresholds,
+                                            query_points=query_points_plane)
+            return indices_cps, indices_pts, w
+        elif derivative == 1:
+            w, wdu = capi.get_weights_derivative1(indices_cps=indices_cps,
+                                            indices_pts=indices_pts,
+                                            knots=self._knots,
+                                            thresholds=self._thresholds,
+                                            query_points=query_points_plane)
+            return indices_cps, indices_pts, w, wdu
+        
+        elif derivative == 2:
+            w, wdu, wdu2 = capi.get_weights_derivative2(indices_cps=indices_cps,
+                                            indices_pts=indices_pts,
+                                            knots=self._knots,
+                                            thresholds=self._thresholds,
+                                            query_points=query_points_plane)
+            return indices_cps, indices_pts, w, wdu, wdu2
     
-    def map(self, points_plane: np.ndarray):
+    def map2(self, points_plane: np.ndarray):
         """
         Map the given points in curvilinear coordinates to reference coordinates.
 
@@ -99,8 +131,22 @@ class CPGEO:
 
         return mapped_points_cpp
     
+    def map3(self, points: np.ndarray):
+        """
+        Map the given points in reference coordinates to physical coordinates.
+
+        Args:
+            points (np.ndarray): The points in reference coordinates, shape (N, 3).
+        Returns:
+            np.ndarray: The mapped points in physical coordinates, shape (N, 3).
+        """
+        indices_cps, indices_pts, w = self.get_weights3(points)
+        mapped_points_cpp = capi.get_mapped_points(indices_cps, indices_pts, w, self._control_points, points.shape[0])
+
+        return mapped_points_cpp
+    
     def show(self):
-        r = self.map(self.reference_to_curvilinear(self._knots))
+        r = self.map3(self._knots)
         coo = self._cp_faces
 
         mesh = pv.PolyData(r, np.hstack([np.full((coo.shape[0], 1), 3), coo]))

@@ -8,12 +8,12 @@ authors = [
     { name = "Song Zenan", email = "243919588@qq.com" }
 ]
 dependencies = [
-    "torch>=2.2.0",
-    "torchvision>=0.17.0",
     "pypardiso>=0.4.7",
     "scipy>=1.17.0",
     "pyvista>=0.46.5",
     "numba>=0.63.1",
+    "numpy>=2.0.0",
+    "networkx>=3.6.1",
 ]
 
 [tool.setuptools]

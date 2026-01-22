@@ -390,6 +390,30 @@ CPGEO_API int mesh_closure_edge_length_derivative2_get(
         double* out_ldr2_values
 );
 
+/**
+ * @brief Optimize mesh by edge flipping to make triangles more equilateral
+ * 
+ * This function performs iterative edge flipping on a manifold triangle mesh to improve
+ * triangle quality by maximizing minimum angles. Boundary edges are never flipped.
+ * 
+ * @param vertices Vertex coordinates (size: num_vertices * vertices_dim)
+ * @param num_vertices Number of vertices
+ * @param vertices_dim Dimension of each vertex (2 for 2D, 3 for 3D)
+ * @param faces_in Input triangle faces (size: num_faces * 3)
+ * @param num_faces Number of triangular faces
+ * @param max_iterations Maximum number of optimization iterations
+ * @param out_faces Output buffer for optimized faces (size: num_faces * 3)
+ */
+CPGEO_API void mesh_optimize_by_edge_flipping(
+        const double* vertices,
+        int num_vertices,
+        int vertices_dim,
+        const int* faces_in,
+        int num_faces,
+        int max_iterations,
+        int* out_faces
+);
+
 #ifdef __cplusplus
 }
 #endif

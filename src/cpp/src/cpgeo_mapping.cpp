@@ -192,50 +192,59 @@ inline static std::tuple<std::array<double, 3>, Tensor2D, Tensor3D> stereographi
 
 
 std::vector<double> get_weights(
-    const std::span<const int> indices_cps,
+    const std::span<const int> indices,
     const std::span<const double> knots, 
     const std::span<const double> thresholds, 
     const std::span<const double, 2> query_points_plane) {
 
     const int numCps = knots.size() / 3;
-    const int numIndices = indices_cps.size();
+    const int numIndices = indices.size();
 
     std::vector<double> weights(numIndices, 0.0);
+    Tensor2D weight_dx(numIndices, 3);
     double weight_sums = 0.0;
+    std::array<double, 3> weight_sum_dx = { 0.0, 0.0, 0.0 };
 
     auto query_points = stereographicProjection2_3(query_points_plane);
 
     // compute the initial weights
-//#pragma omp parallel for
-    for(int idx = 0; idx < numIndices; ++idx) {
-        int knot_idx = indices_cps[idx];
+#pragma omp parallel for reduction(+:weight_sums)
+    for (int idx = 0; idx < numIndices; ++idx) {
+        int knot_idx = indices[idx];
+
 
         double qx = query_points[0];
         double qy = query_points[1];
         double qz = query_points[2];
+
         double kx = knots[knot_idx * 3];
         double ky = knots[knot_idx * 3 + 1];
         double kz = knots[knot_idx * 3 + 2];
 
-        std::array<double, 3> dp = {qx - kx, qy - ky, qz - kz};
+        std::array<double, 3> dp = { qx - kx, qy - ky, qz - kz };
 
         double threshold = thresholds[knot_idx];
-        double w = weightFunction(dp, threshold);
+        auto result = weightFunctionDerivative1(dp, threshold);
 
-        weights[idx] = w;
-        weight_sums += w;
+        weights[idx] = std::get<0>(result);
+
+        weight_sums += weights[idx];
     }
-
     if (weight_sums == 0.0) {
         return weights;
     }
-
     // normalize weights
-    for(int idx = 0; idx < numIndices; ++idx) {
-        weights[idx] /= weight_sums;
+    std::vector<double> rdot(numIndices, 0.0);
+    Tensor2D rdudot(numIndices, 2);
+
+    for (int idx = 0; idx < numIndices; ++idx) {
+        int query_idx = indices[idx];
+        if (weight_sums > 0) {
+            rdot[idx] = weights[idx] / weight_sums;
+        }
     }
 
-    return weights;
+    return rdot;
 }
 
 std::tuple<std::vector<double>, Tensor2D> get_weights_derivative1(
