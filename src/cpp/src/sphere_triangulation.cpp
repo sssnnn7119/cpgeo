@@ -22,6 +22,13 @@ SphereTriangulation::SphereTriangulation(std::span<const double> sphere_points_s
     triangles.reserve(num_points * 4);
 }
 
+void SphereTriangulation::set_points(std::span<const double> sphere_points_span) {
+    sphere_points = sphere_points_span;
+    num_points = static_cast<int>(sphere_points_span.size() / 3);
+    triangles.clear();
+    triangles.reserve(num_points * 4);
+}
+
 std::pair<double, double> SphereTriangulation::stereographicProjection(int point_idx, bool north) const {
     double x = sphere_points[point_idx * 3];
     double y = sphere_points[point_idx * 3 + 1];

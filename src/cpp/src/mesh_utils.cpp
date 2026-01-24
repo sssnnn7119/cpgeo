@@ -3,7 +3,7 @@
 
 // edges method
 namespace cpgeo {
-std::unordered_map<std::pair<int, int>, int, EdgeHash> extractEdgesWithNumber(const std::span<const int>& triangles) {
+std::unordered_map<std::pair<int, int>, int, EdgeHash> extractEdgesWithNumber(const std::span<const int> triangles) {
     std::unordered_map<std::pair<int, int>, int, EdgeHash> edge_count;
     int num_triangles = static_cast<int>(triangles.size() / 3);
     for (int tri_idx = 0; tri_idx < num_triangles; ++tri_idx) {
@@ -18,7 +18,7 @@ std::unordered_map<std::pair<int, int>, int, EdgeHash> extractEdgesWithNumber(co
     return edge_count;
 }
 
-std::vector<std::vector<int>> extractBoundaryLoops(const std::span<const int>& triangles) {
+std::vector<std::vector<int>> extractBoundaryLoops(const std::span<const int> triangles) {
     const int num_triangles = static_cast<int>(triangles.size() / 3);
     
     // Find all boundary edges (edges that appear only once)
@@ -84,7 +84,7 @@ std::vector<std::vector<int>> extractBoundaryLoops(const std::span<const int>& t
 // mesh fineturing method
 namespace cpgeo {
 
-    double closure_edge_length_derivative0(std::span<const double> vertices, int vertices_dim, std::span<const int> edges, int order) {
+    auto closure_edge_length_derivative0(std::span<const double> vertices, int vertices_dim, std::span<const int> edges, int order) -> double {
 
         int num_edges = edges.size() / 2;
 
@@ -106,7 +106,13 @@ namespace cpgeo {
         return loss;
     }
 
-    std::tuple<double, std::vector<double>, std::vector<int>, std::vector<double>> closure_edge_length_derivative2(std::span<const double> vertices, int vertices_dim, std::span<const int> edges, int order) {
+    auto closure_edge_length_derivative2(
+        std::span<const double> vertices,
+        int vertices_dim,
+        std::span<const int> edges,
+        int order)
+        -> std::tuple<double, std::vector<double>, std::vector<int>, std::vector<double>>
+    {
 
         int num_edges = edges.size() / 2;
         int num_vertices = vertices.size() / vertices_dim;
@@ -176,10 +182,8 @@ namespace cpgeo {
             Ldr2_values.push_back(value);
         }
 
-		return { loss, Ldr, Ldr2_indices, Ldr2_values };
+        return { loss, Ldr, Ldr2_indices, Ldr2_values };
 
     }
-
-    
 
 }

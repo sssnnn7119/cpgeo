@@ -28,6 +28,9 @@ public:
     SphereTriangulation(std::span<const double> sphere_points_span);
     
     void triangulate();
+
+    // Update the input points; useful if the underlying buffer changes
+    void set_points(std::span<const double> sphere_points_span);
     size_t size() const;
     void getTriangleIndices(std::span<int> results) const;
     void exportToObj(const std::string& filename) const;

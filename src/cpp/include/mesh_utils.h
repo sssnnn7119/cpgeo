@@ -27,7 +27,7 @@ struct EdgeHash {
  * @param triangles Input triangle mesh (flattened: [t0v0, t0v1, t0v2, t1v0, ...])
  * @return A map from edges (as pairs of vertex indices) to their occurrence counts
  */
-std::unordered_map<std::pair<int, int>, int, EdgeHash> extractEdgesWithNumber(const std::span<const int>& triangles);
+std::unordered_map<std::pair<int, int>, int, EdgeHash> extractEdgesWithNumber(const std::span<const int> triangles);
 
 /**
  * @brief Extract all boundary loops from a triangular mesh
@@ -38,7 +38,7 @@ std::unordered_map<std::pair<int, int>, int, EdgeHash> extractEdgesWithNumber(co
  * @param triangles Input triangle mesh (flattened: [t0v0, t0v1, t0v2, t1v0, ...])
  * @return Vector of boundary loops, where each loop is a vector of vertex indices forming a closed path
  */
-std::vector<std::vector<int>> extractBoundaryLoops(const std::span<const int>& triangles);
+std::vector<std::vector<int>> extractBoundaryLoops(const std::span<const int> triangles);
 
 
 }
@@ -73,7 +73,11 @@ struct Array4IntHash {
  * @param order Order of the length penalty (e.g., 2 for squared length)
  * @return The computed loss value
  */
-double closure_edge_length_derivative0(std::span<const double> vertices, int vertices_dim, std::span<const int> edges, int order);
+auto closure_edge_length_derivative0(
+    std::span<const double> vertices, 
+    int vertices_dim, std::span<const int> edges, 
+    int order) 
+-> double;
 
 /**
  * @brief Compute the closure edge length loss and its first and second derivatives
@@ -88,5 +92,10 @@ double closure_edge_length_derivative0(std::span<const double> vertices, int ver
  *         - second derivative in COO format: indices (flattened: [v0_idx, v0_dim, v1_idx, v1_dim, ...])
  *         - second derivative in COO format: values (corresponding values)
  */
-std::tuple<double, std::vector<double>, std::vector<int>, std::vector<double>> closure_edge_length_derivative2(std::span<const double> vertices, int vertices_dim, std::span<const int> edges, int order);
+auto closure_edge_length_derivative2(
+    std::span<const double> vertices, 
+    int vertices_dim, 
+    std::span<const int> edges, 
+    int order)
+-> std::tuple<double, std::vector<double>, std::vector<int>, std::vector<double>>;
 }

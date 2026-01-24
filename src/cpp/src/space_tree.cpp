@@ -187,24 +187,28 @@ std::vector<int> SpaceTree::query_point(double x, double y, double z) const {
     return results;
 }
 
-void SpaceTree::compute_indices_batch(const std::span<const double> query_points) {
+std::vector<std::vector<int>> SpaceTree::query_point_batch(const std::span<const double> query_points) {
     size_t num_pts = query_points.size() / 3;
+
+    std::vector<std::vector<int>> results(num_pts);
     
     // We must ensure the outer vector has the correct size
-    if (this->query_results.size() != num_pts) {
-        this->query_results.resize(num_pts);
+    if (results.size() != num_pts) {
+        results.resize(num_pts);
     }
 
     #pragma omp parallel for
     for (int i = 0; i < static_cast<int>(num_pts); i++) {
-        this->query_results[i].clear();
-        this->query_results[i].reserve(50); 
+        results[i].clear();
+        results[i].reserve(50); 
 
         double x = query_points[i * 3];
         double y = query_points[i * 3 + 1];
         double z = query_points[i * 3 + 2];
-        query_results[i] = query_point(x, y, z);
+        results[i] = query_point(x, y, z);
     }
+
+    return results;
 }
 
 void SpaceTree::print_tree_structure() const {

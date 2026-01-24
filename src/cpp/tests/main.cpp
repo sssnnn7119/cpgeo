@@ -10,6 +10,12 @@
 #include <math.h>
 #include <time.h>
 
+#include "cpgeo_seeding.h"
+#include "space_tree.h"
+#include <fstream>
+#include <sstream>
+#include <string>
+
 const double M_PI = 3.14159265358979323846;
 
 namespace TestWeight{
@@ -18,7 +24,7 @@ namespace TestWeight{
         double knot_limit = 2.0;
 
         std::vector<double> knots(num_knots_dim * num_knots_dim * num_knots_dim * 3, 0.0);
-        std::vector<double> thresholds(num_knots_dim * num_knots_dim * num_knots_dim, 1.2);
+        std::vector<double> thresholds(num_knots_dim * num_knots_dim * num_knots_dim, 0.6);
 
         for (int x = 0; x < num_knots_dim; ++x) {
             for (int y = 0; y < num_knots_dim; ++y) {
@@ -31,7 +37,7 @@ namespace TestWeight{
             }
         }
 
-        std::array<double, 3> query_point = {1.0, 0.0, 0.0};
+        std::array<double, 6> query_point = {1.0, 0.0, 0.0};
         
         auto tree = space_tree_create(
             knots.data(),
@@ -43,12 +49,12 @@ namespace TestWeight{
         space_tree_query_compute(
             tree,
             query_point.data(),
-            1,
+            2,
             &num_indices
         );
 
         std::vector<int> indices_cps(num_indices);
-        std::vector<int> indices_pts(1 + 1);
+        std::vector<int> indices_pts(2 + 1);
         space_tree_query_get(
             tree,
             num_indices,
@@ -62,7 +68,7 @@ namespace TestWeight{
         std::vector<double> wdu(num_indices * 2);
 		std::vector<double> wdu2(num_indices * 4);
 
-        std::array<double, 2> query_point_2d = {2.0, 0.0};
+        std::array<double, 4> query_point_2d = {2.0, 0.0};
         cpgeo_get_weights_derivative2(
             indices_cps.data(),
             indices_pts.data(),
@@ -71,7 +77,7 @@ namespace TestWeight{
             static_cast<int>(knots.size() / 3),
             thresholds.data(),
             query_point_2d.data(),
-            1,
+            2,
             weights.data(),
             wdu.data(),
             wdu2.data()
@@ -83,7 +89,41 @@ namespace TestWeight{
                 continue;
             }
             std::cout << "Knot Index: (" << indices_cps[i] << ")"
-                      << " Weight: " << weights[i] << std::endl;
+                << " Weight: " << weights[i] << "\t\tWdu: (" << wdu[i * 2 + 0] << ", " << wdu[i * 2 + 1] << ")" 
+                "\t\tWdu2: (" << wdu2[i * 4 + 0 * 2 + 0] << ")"
+                << std::endl;
+
+        }
+
+        std::cout << std::endl;
+
+
+        std::vector<double> _weights(num_indices, 0.0);
+        std::vector<double> _wdu(num_indices * 2);
+        std::vector<double> _wdu2(num_indices * 4);
+        query_point_2d[0] += 1e-8;
+        cpgeo_get_weights_derivative2(
+            indices_cps.data(),
+            indices_pts.data(),
+            num_indices,
+            knots.data(),
+            static_cast<int>(knots.size() / 3),
+            thresholds.data(),
+            query_point_2d.data(),
+            2,
+            _weights.data(),
+            _wdu.data(),
+            _wdu2.data()
+        );
+
+        // Verify weights
+        for (int i = 0; i < num_indices; i++) {
+            if (weights[i] < 1e-10) {
+                continue;
+            }
+            std::cout << "Knot Index: (" << indices_cps[i] << ")"
+                << " Weight: " << (weights[i] - _weights[i])/1e-8 << "\t\tWdu: (" << (wdu[i * 2 + 0]- _wdu[i * 2 + 0])/1e-8 << ", " << wdu[i * 2 + 1] << ")" << std::endl;
+
         }
 
         return true;
@@ -805,12 +845,81 @@ namespace TestEdgeRefinement{
     }
 }
 
+namespace TestRefineMesh{
+
+    static bool read_points_from_file(const std::string &path, std::vector<double> &out_points) {
+        std::ifstream ifs(path);
+        if (!ifs.is_open()) return false;
+        out_points.clear();
+        std::string line;
+        while (std::getline(ifs, line)) {
+            if (line.empty()) continue;
+            std::stringstream ss(line);
+            double x, y, z;
+            char comma;
+            // Expect format: x,y,z
+            if (!(ss >> x)) continue;
+            if (!(ss >> comma)) continue;
+            if (!(ss >> y)) continue;
+            if (!(ss >> comma)) continue;
+            if (!(ss >> z)) continue;
+            out_points.push_back(x);
+            out_points.push_back(y);
+            out_points.push_back(z);
+        }
+        return !out_points.empty();
+    }
+
+    bool test_remesh_build_spacetree() {
+        std::cout << "=== Test Remesh: Load knots & controlpoints and build SpaceTree ===" << std::endl;
+
+
+
+        std::vector<double> knots;
+        std::vector<double> controlpoints;
+
+        knots.reserve(10000);
+        controlpoints.reserve(10000);
+
+        // Prefer explicit filenames
+        bool ok1 = read_points_from_file("A:/MineData/Learning/Code/Projects/Modules/CPGEO/src/cpp/tests/knots.txt", knots);
+        bool ok2 = read_points_from_file("A:/MineData/Learning/Code/Projects/Modules/CPGEO/src/cpp/tests/control_points.txt", controlpoints);
+
+        int num_knots = static_cast<int>(knots.size() / 3);
+        std::cout << "Loaded " << num_knots << " knots" << std::endl;
+        if (num_knots <= 0) return false;
+
+        // Compute thresholds using k-nearest (k=4)
+        std::vector<double> thresholds(num_knots, 1.0);
+        int k = 20;
+        cpgeo_compute_thresholds(knots.data(), num_knots, k, thresholds.data());
+
+        // Build space tree
+        cpgeo_handle_t tree = space_tree_create(knots.data(), num_knots, thresholds.data());
+        if (!tree) {
+            std::cout << "space_tree_create failed" << std::endl;
+            return false;
+        }
+
+        std::cout << "SpaceTree created successfully (" << num_knots << " knots)" << std::endl;
+
+
+		cpgeo::uniformlyMesh(knots, controlpoints, *(cpgeo::SpaceTree*)tree, 1.0, 10);
+
+        // cleanup
+        space_tree_destroy(tree);
+        return true;
+    }
+}
+
 int main() {
 
     // TestSpaceTree::test_performance();
     // TestTriangulationPlain::test_mesh();
-    // TestWeight::test_weight_function();   
-    TestEdgeRefinement::test_refinement(); 
+     TestWeight::test_weight_function();   
+    // TestEdgeRefinement::test_refinement(); 
+    //TestRefineMesh::test_remesh_build_spacetree();
+
 
     return 0;
 }

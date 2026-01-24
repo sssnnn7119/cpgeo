@@ -27,7 +27,7 @@ namespace cpgeo {
  * @param max_iterations Maximum number of flip iterations (default: 100)
  * @return Optimized triangle faces with the same format as input
  */
-std::vector<int> optimize_mesh_by_edge_flipping(
+std::vector<int> mesh_optimize_by_edge_flipping(
     std::span<const double> vertices,
     int vertices_dim,
     std::span<const int> faces_in,

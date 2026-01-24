@@ -528,7 +528,8 @@ def get_weights_derivative1(indices_cps: np.ndarray, indices_pts: np.ndarray, kn
     out_weights = np.zeros(num_indices, dtype=np.float64)
     out_weights_ptr = out_weights.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     
-    out_weights_du = np.zeros(num_indices * 2, dtype=np.float64)  # 2D derivatives
+    # First derivatives stored with layout [2, num_indices]
+    out_weights_du = np.zeros((2, num_indices), dtype=np.float64)
     out_weights_du_ptr = out_weights_du.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     
     _lib.cpgeo_get_weights_derivative1(
@@ -560,6 +561,8 @@ def get_weights_derivative2(indices_cps: np.ndarray, indices_pts: np.ndarray, kn
     
     Returns:
         Tuple[np.ndarray, np.ndarray, np.ndarray]: Weights, first derivatives, and second derivatives arrays
+            - shape of first derivatives: [2, num_indices]
+            - shape of second derivatives: [2, 2, num_indices]
     """
     knots = knots.flatten()
     query_points = query_points.flatten()
@@ -587,10 +590,12 @@ def get_weights_derivative2(indices_cps: np.ndarray, indices_pts: np.ndarray, kn
     out_weights = np.zeros(num_indices, dtype=np.float64)
     out_weights_ptr = out_weights.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     
-    out_weights_du = np.zeros((num_indices, 2), dtype=np.float64).flatten()  # 2D first derivatives
+    # First derivatives stored with layout [2, num_indices]
+    out_weights_du = np.zeros((2, num_indices), dtype=np.float64)
     out_weights_du_ptr = out_weights_du.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     
-    out_weights_du2 = np.zeros((num_indices, 2, 2), dtype=np.float64).flatten()  # 2x2 second derivatives
+    # Second derivatives stored with layout [2, 2, num_indices]
+    out_weights_du2 = np.zeros((2, 2, num_indices), dtype=np.float64)
     out_weights_du2_ptr = out_weights_du2.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     
     _lib.cpgeo_get_weights_derivative2(
@@ -629,10 +634,10 @@ def get_mapped_points(indices_cps: np.ndarray, indices_pts: np.ndarray,
     num_controlpoints = controlpoints.shape[0]
     
     # Prepare input arrays
-    indices_cps = np.asarray(indices_cps, dtype=np.int32)
-    indices_pts = np.asarray(indices_pts, dtype=np.int32)
-    weights = np.asarray(weights, dtype=np.float64)
-    controlpoints = np.asarray(controlpoints, dtype=np.float64).flatten()
+    indices_cps = np.ascontiguousarray(indices_cps, dtype=np.int32)
+    indices_pts = np.ascontiguousarray(indices_pts, dtype=np.int32)
+    weights = np.ascontiguousarray(weights, dtype=np.float64)
+    controlpoints = np.ascontiguousarray(controlpoints, dtype=np.float64).flatten()
     
     # Prepare output array
     out_mapped_points = np.zeros((num_queries, 3), dtype=np.float64).flatten()

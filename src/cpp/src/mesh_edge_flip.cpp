@@ -229,7 +229,7 @@ inline std::unordered_map<std::pair<int, int>, EdgeInfo, EdgeHash> build_edge_ma
     return edge_map;
 }
 
-std::vector<int> optimize_mesh_by_edge_flipping(
+std::vector<int> mesh_optimize_by_edge_flipping(
     std::span<const double> vertices,
     int vertices_dim,
     std::span<const int> faces_in,

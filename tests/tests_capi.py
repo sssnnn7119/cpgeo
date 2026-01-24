@@ -35,14 +35,13 @@ def test_space_tree_query_and_weight_computation():
     points = np.array([[1.0, 0.0, 0.0]], dtype=np.float64).repeat(num_repeat, axis=0)
     points_plane = np.array([[2., 0.]], dtype=np.float64).repeat(num_repeat, axis=0)
 
-    t0 = time.time()
 
-    tree = cpgeo.capi.space_tree_create(knots=knots, thresholds=threshold)
+    with timer("Space tree creation"):
+        tree = cpgeo.capi.space_tree_create(knots=knots, thresholds=threshold)
 
-    indices_cps, indices_pts = cpgeo.capi.get_space_tree_query(tree, query_points_sphere=points)
+    with timer("Space tree query", iterations=1):
+        indices_cps, indices_pts = cpgeo.capi.get_space_tree_query(tree, query_points_sphere=points)
 
-    t1 = time.time()
-    print(f"Tree query time: {t1 - t0} seconds")
 
     with timer("Weight computation", iterations=100):
         for _ in range(100):
@@ -64,6 +63,7 @@ def test_space_tree_query_and_weight_computation():
     controlpoints[:, 2] += 10.
 
     with timer("Mapped points computation C++", iterations=1000):
+        
         mapped_points_cpp = cpgeo.capi.get_mapped_points(indices_cps, indices_pts, w, controlpoints, points.shape[0])
 
 

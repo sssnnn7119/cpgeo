@@ -32,6 +32,9 @@ class CPGEO:
         self._thresholds: np.ndarray = None
         """the thresholds of each knot point, shape (V,)"""
 
+        self._space_tree = None
+        """the space tree for fast querying"""
+
     def initialize(self):
         """Initialize the knot points and thresholds based on the control points."""
         
@@ -40,6 +43,8 @@ class CPGEO:
             knots=self._knots,
             k=self._knot_influence_num,)
         
+        if self._space_tree is not None:
+            capi.space_tree_destroy(self._space_tree)
         self._space_tree = capi.space_tree_create(knots=self._knots,
                                                   thresholds=self._thresholds)
         
@@ -69,7 +74,7 @@ class CPGEO:
                                             knots=self._knots,
                                             thresholds=self._thresholds,
                                             query_points=points_plane)
-            return indices_cps, indices_pts, w, wdu
+            return indices_cps, indices_pts, w, wdu.reshape([2, -1])
         
         elif derivative == 2:
             w, wdu, wdu2 = capi.get_weights_derivative2(indices_cps=indices_cps,
@@ -77,7 +82,7 @@ class CPGEO:
                                             knots=self._knots,
                                             thresholds=self._thresholds,
                                             query_points=points_plane)
-            return indices_cps, indices_pts, w, wdu, wdu2
+            return indices_cps, indices_pts, w, wdu.reshape([2, -1]), wdu2.reshape([2, 2, -1])
     
     def get_weights2(self, query_points_plane: np.ndarray, derivative: int = 0):
         """
@@ -105,7 +110,7 @@ class CPGEO:
                                             knots=self._knots,
                                             thresholds=self._thresholds,
                                             query_points=query_points_plane)
-            return indices_cps, indices_pts, w, wdu
+            return indices_cps, indices_pts, w, wdu.reshape([2, -1])
         
         elif derivative == 2:
             w, wdu, wdu2 = capi.get_weights_derivative2(indices_cps=indices_cps,
@@ -113,9 +118,9 @@ class CPGEO:
                                             knots=self._knots,
                                             thresholds=self._thresholds,
                                             query_points=query_points_plane)
-            return indices_cps, indices_pts, w, wdu, wdu2
+            return indices_cps, indices_pts, w, wdu.reshape([2, -1]), wdu2.reshape([2, 2, -1])
     
-    def map2(self, points_plane: np.ndarray):
+    def map2(self, points_plane: np.ndarray, derivative: int = 0):
         """
         Map the given points in curvilinear coordinates to reference coordinates.
 
@@ -145,6 +150,8 @@ class CPGEO:
 
         return mapped_points_cpp
     
+    
+
     def show(self):
         r = self.map3(self._knots)
         coo = self._cp_faces
@@ -390,6 +397,16 @@ class CPGEO:
         
         return knots3
 
+    def __del__(self):
+        """Destructor: ensure the C space tree is destroyed when the Python object is garbage collected."""
+        try:
+            st = getattr(self, '_space_tree', None)
+            if st is not None:
+                capi.space_tree_destroy(st)
+                self._space_tree = None
+        except Exception:
+            # Never raise exceptions from a destructor
+            pass
 
     @property
     def control_points(self) -> np.ndarray:

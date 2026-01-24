@@ -1,4 +1,3 @@
-
 #include "cpgeo_mapping.h"
 #include "space_tree.h"
 #include "cpgeo.h"
@@ -95,14 +94,14 @@ inline static std::tuple<double, std::array<double, 3>, Tensor2D> weightFunction
     return std::tuple<double, std::array<double, 3>, Tensor2D>(weight, derivative, std::move(derivative2));
 }
 
-inline static std::array<double, 2> stereographicProjection3_2(const std::span<const double, 3> cooSphere) {
+inline std::array<double, 2> stereographicProjection3_2(const std::span<const double, 3> cooSphere) {
 	std::array<double, 2> cooPlane;
 	cooPlane[0] = 2 * cooSphere[0] / (1 - cooSphere[2]);
 	cooPlane[1] = 2 * cooSphere[1] / (1 - cooSphere[2]);
     return cooPlane;
 }
 
-inline static std::array<double, 3> stereographicProjection2_3(const std::span<const double, 2> cooPlane) {
+inline std::array<double, 3> stereographicProjection2_3(const std::span<const double, 2> cooPlane) {
     std::array<double, 3> cooSphere;
     double t = 1 / (4 + cooPlane[0] * cooPlane[0] + cooPlane[1] * cooPlane[1]);
 	cooSphere[0] = 4 * cooPlane[0] * t;
@@ -111,7 +110,7 @@ inline static std::array<double, 3> stereographicProjection2_3(const std::span<c
     return cooSphere;
 }
 
-inline static std::tuple<std::array<double, 3>, Tensor2D> stereographicProjection2_3Derivative1(const std::span<const double> cooPlane) {
+inline std::tuple<std::array<double, 3>, Tensor2D> stereographicProjection2_3Derivative1(const std::span<const double> cooPlane) {
     
     // first get the mapping
     std::array<double, 3> cooSphere;
@@ -138,7 +137,7 @@ inline static std::tuple<std::array<double, 3>, Tensor2D> stereographicProjectio
 	return std::tuple<std::array<double, 3>, Tensor2D>(cooSphere, std::move(xdu));
 }
 
-inline static std::tuple<std::array<double, 3>, Tensor2D, Tensor3D> stereographicProjection2_3Derivative2(const std::span<const double> cooPlane) {
+inline std::tuple<std::array<double, 3>, Tensor2D, Tensor3D> stereographicProjection2_3Derivative2(const std::span<const double> cooPlane) {
 
     // first get the mapping
     std::array<double, 3> cooSphere;
@@ -195,7 +194,7 @@ std::vector<double> get_weights(
     const std::span<const int> indices,
     const std::span<const double> knots, 
     const std::span<const double> thresholds, 
-    const std::span<const double, 2> query_points_plane) {
+    const std::span<const double, 3> query_points) {
 
     const int numCps = knots.size() / 3;
     const int numIndices = indices.size();
@@ -205,17 +204,15 @@ std::vector<double> get_weights(
     double weight_sums = 0.0;
     std::array<double, 3> weight_sum_dx = { 0.0, 0.0, 0.0 };
 
-    auto query_points = stereographicProjection2_3(query_points_plane);
+
+    double qx = query_points[0];
+    double qy = query_points[1];
+    double qz = query_points[2];
 
     // compute the initial weights
 #pragma omp parallel for reduction(+:weight_sums)
     for (int idx = 0; idx < numIndices; ++idx) {
         int knot_idx = indices[idx];
-
-
-        double qx = query_points[0];
-        double qy = query_points[1];
-        double qz = query_points[2];
 
         double kx = knots[knot_idx * 3];
         double ky = knots[knot_idx * 3 + 1];
@@ -247,7 +244,7 @@ std::vector<double> get_weights(
     return rdot;
 }
 
-std::tuple<std::vector<double>, Tensor2D> get_weights_derivative1(
+std::vector<double> get_weights(
     const std::span<const int> indices,
     const std::span<const double> knots,
     const std::span<const double> thresholds,
@@ -258,6 +255,66 @@ std::tuple<std::vector<double>, Tensor2D> get_weights_derivative1(
 
     std::vector<double> weights(numIndices, 0.0);
     Tensor2D weight_dx(numIndices, 3);
+    double weight_sums = 0.0;
+    std::array<double, 3> weight_sum_dx = { 0.0, 0.0, 0.0 };
+
+
+	auto query_points = stereographicProjection2_3(query_points_plane);
+
+    double qx = query_points[0];
+    double qy = query_points[1];
+    double qz = query_points[2];
+
+    // compute the initial weights
+//#pragma omp parallel for reduction(+:weight_sums)
+    for (int idx = 0; idx < numIndices; ++idx) {
+        int knot_idx = indices[idx];
+
+
+
+
+        double kx = knots[knot_idx * 3];
+        double ky = knots[knot_idx * 3 + 1];
+        double kz = knots[knot_idx * 3 + 2];
+
+        std::array<double, 3> dp = { qx - kx, qy - ky, qz - kz };
+
+        double threshold = thresholds[knot_idx];
+        auto result = weightFunctionDerivative1(dp, threshold);
+
+        weights[idx] = std::get<0>(result);
+
+        weight_sums += weights[idx];
+    }
+    if (weight_sums == 0.0) {
+        return weights;
+    }
+    // normalize weights
+    std::vector<double> rdot(numIndices, 0.0);
+    Tensor2D rdudot(numIndices, 2);
+
+    for (int idx = 0; idx < numIndices; ++idx) {
+        int query_idx = indices[idx];
+        if (weight_sums > 0) {
+            rdot[idx] = weights[idx] / weight_sums;
+        }
+    }
+
+    return rdot;
+}
+
+std::array<std::vector<double>, 2> get_weights_derivative1(
+    const std::span<const int> indices,
+    const std::span<const double> knots,
+    const std::span<const double> thresholds,
+    const std::span<const double, 2> query_points_plane) {
+
+    const int numCps = knots.size() / 3;
+    const int numIndices = indices.size();
+
+    std::vector<double> weights(numIndices, 0.0);
+    std::vector<double> _weight_dx(numIndices * 3, 0.0);
+    TensorView2D weight_dx(numIndices, 3, _weight_dx);
     double weight_sums = 0.0;
     std::array<double, 3> weight_sum_dx = { 0.0, 0.0, 0.0 };
 
@@ -294,12 +351,13 @@ std::tuple<std::vector<double>, Tensor2D> get_weights_derivative1(
     }
 
     if (weight_sums == 0.0) {
-        return { weights, Tensor2D(numIndices, 3) };
+        return { weights, _weight_dx };
     }
 
     // normalize weights
     std::vector<double> rdot(numIndices, 0.0);
-    Tensor2D rdudot(numIndices, 2);
+	std::vector<double> _rdudot(numIndices * 2, 0.0);
+	TensorView2D rdudot(2, numIndices, _rdudot);
 
     for (int idx = 0; idx < numIndices; ++idx) {
         int query_idx = indices[idx];
@@ -311,8 +369,8 @@ std::tuple<std::vector<double>, Tensor2D> get_weights_derivative1(
             rdxdot[2] = (weight_dx.at(idx, 2) / weight_sums) - (weights[idx] * weight_sum_dx[2]) / (weight_sums * weight_sums);
 
             // chain rule to get derivative respect to plane coordinates
-            rdudot.at(idx, 0) = rdxdot[0] * xdu.at(0, 0) + rdxdot[1] * xdu.at(1, 0) + rdxdot[2] * xdu.at(2, 0);
-            rdudot.at(idx, 1) = rdxdot[0] * xdu.at(0, 1) + rdxdot[1] * xdu.at(1, 1) + rdxdot[2] * xdu.at(2, 1);
+            rdudot.at(0, idx) = rdxdot[0] * xdu.at(0, 0) + rdxdot[1] * xdu.at(1, 0) + rdxdot[2] * xdu.at(2, 0);
+            rdudot.at(1, idx) = rdxdot[0] * xdu.at(0, 1) + rdxdot[1] * xdu.at(1, 1) + rdxdot[2] * xdu.at(2, 1);
         }
 
 
@@ -320,10 +378,10 @@ std::tuple<std::vector<double>, Tensor2D> get_weights_derivative1(
 
 
 
-    return std::tuple<std::vector<double>, Tensor2D>(rdot, std::move(rdudot));
+    return { rdot, _rdudot };
 }
 
-std::tuple<std::vector<double>, Tensor2D, Tensor3D> get_weights_derivative2(
+std::array<std::vector<double>, 3> get_weights_derivative2(
     const std::span<const int> indices,
     const std::span<const double> knots,
     const std::span<const double> thresholds,
@@ -391,13 +449,16 @@ std::tuple<std::vector<double>, Tensor2D, Tensor3D> get_weights_derivative2(
     }
 
     if (weight_sums == 0.0) {
-        return { weights, Tensor2D(numIndices, 2), Tensor3D(numIndices, 2, 2)};
+        return { weights, std::vector<double>(numIndices * 2, 0.0), std::vector<double>(numIndices * 2 * 2, 0.0) };
     }
 
     // normalize weights
     std::vector<double> rdot(numIndices, 0.0);
-    Tensor2D rdudot(numIndices, 2);
-    Tensor3D rdudot2(numIndices, 2, 2);
+	std::vector<double> _rdudot(2 * numIndices, 0.0);
+	std::vector<double> _rdu2dot(2 * 2 * numIndices, 0.0);
+
+	TensorView2D rdudot(2, numIndices, _rdudot);
+	TensorView3D rdu2dot(2, 2, numIndices, _rdu2dot);
 
     for (int idx = 0; idx < numIndices; ++idx) {
         int query_idx = indices[idx];
@@ -409,8 +470,8 @@ std::tuple<std::vector<double>, Tensor2D, Tensor3D> get_weights_derivative2(
             rdxdot[2] = (weight_dx.at(idx, 2) / weight_sums) - (weights[idx] * weight_sum_dx[2]) / (weight_sums * weight_sums);
 
             // chain rule to get derivative respect to plane coordinates
-            rdudot.at(idx, 0) = rdxdot[0] * xdu.at(0, 0) + rdxdot[1] * xdu.at(1, 0) + rdxdot[2] * xdu.at(2, 0);
-            rdudot.at(idx, 1) = rdxdot[0] * xdu.at(0, 1) + rdxdot[1] * xdu.at(1, 1) + rdxdot[2] * xdu.at(2, 1);
+            rdudot.at(0, idx) = rdxdot[0] * xdu.at(0, 0) + rdxdot[1] * xdu.at(1, 0) + rdxdot[2] * xdu.at(2, 0);
+            rdudot.at(1, idx) = rdxdot[0] * xdu.at(0, 1) + rdxdot[1] * xdu.at(1, 1) + rdxdot[2] * xdu.at(2, 1);
 
             Tensor2D rdxdot2(3, 3);
             for (int dim1 = 0; dim1 < 3; dim1++) {
@@ -427,14 +488,14 @@ std::tuple<std::vector<double>, Tensor2D, Tensor3D> get_weights_derivative2(
             // chain rule to get second derivative respect to plane coordinates
             for (int dim1 = 0; dim1 < 2; dim1++)
                 for (int dim2 = 0; dim2 < 2; dim2++){
-                    rdudot2.at(idx, dim1, dim2) = 0;
+                    rdu2dot.at(dim1, dim2, idx) = 0;
 
                     for(int i=0;i<3;++i){
                         for(int j=0;j<3;++j){
-                            rdudot2.at(idx, dim1, dim2) += rdxdot2.at(i, j) * xdu.at(i, dim1) * xdu.at(j, dim2);
+                            rdu2dot.at(dim1, dim2, idx) += rdxdot2.at(i, j) * xdu.at(i, dim1) * xdu.at(j, dim2);
                         }
 
-                        rdudot2.at(idx, dim1, dim2) += rdxdot[i] * xdu2.at(i, dim1, dim2);
+                        rdu2dot.at(dim1, dim2, idx) += rdxdot[i] * xdu2.at(i, dim1, dim2);
                     }
                     
                 }
@@ -446,7 +507,157 @@ std::tuple<std::vector<double>, Tensor2D, Tensor3D> get_weights_derivative2(
 
 
 
-    return std::tuple<std::vector<double>, Tensor2D, Tensor3D>(rdot, std::move(rdudot), std::move(rdudot2));
+    return { rdot, _rdudot, _rdu2dot};
 }
+
+// compute mapped points from control points using sparse weights
+
+std::array<double, 3> get_mapped_points(
+    const std::span<const int> indices_cps,
+    const std::span<const double> weights,
+    const std::span<const double> controlpoints) {
+
+    std::array<double, 3> out_mapped = { 0.0, 0.0, 0.0 };
+    int num_controlpoints = static_cast<int>(controlpoints.size() / 3);
+    int num_indices = static_cast<int>(indices_cps.size());
+    for (int j = 0; j < num_indices; ++j) {
+        int cp_idx = indices_cps[j];
+        double w = weights[j];
+        if (cp_idx >= 0 && cp_idx < num_controlpoints) {
+            for (int k = 0; k < 3; ++k) {
+                out_mapped[k] += w * controlpoints[cp_idx * 3 + k];
+            }
+        }
+    }
+
+    return out_mapped;
+}
+
+std::vector<double> get_mapped_points_batch(
+    const std::span<const int> indices_cps,
+    const std::span<const int> indices_pts,
+    const std::span<const double> weights,
+    const std::span<const double> controlpoints) {
+
+    int num_queries = 0;
+    if (indices_pts.size() >= 1) {
+        num_queries = static_cast<int>(indices_pts.size()) - 1;
+    }
+    int num_controlpoints = static_cast<int>(controlpoints.size() / 3);
+
+    std::vector<double> out_mapped(num_queries * 3, 0.0);
+    if (num_queries <= 0 || num_controlpoints <= 0) {
+        return out_mapped;
+    }
+
+    // Each query writes to its own segment so this is safe to parallelize over queries
+    #pragma omp parallel for
+    for (int i = 0; i < num_queries; ++i) {
+        int start = indices_pts[i];
+        int end = indices_pts[i + 1];
+        for (int j = start; j < end; ++j) {
+            int cp_idx = indices_cps[j];
+            double w = weights[j];
+            if (cp_idx >= 0 && cp_idx < num_controlpoints) {
+                for (int k = 0; k < 3; ++k) {
+                    out_mapped[i * 3 + k] += w * controlpoints[cp_idx * 3 + k];
+                }
+            }
+        }
+    }
+
+    return out_mapped;
+} 
+
+std::array<double, 3> map_points(
+    std::span<const double, 3> query_point,
+    SpaceTree& tree,
+    const std::span<const double> controlpoints
+){
+    auto indices_cps = tree.query_point(query_point[0], query_point[1], query_point[2]);
+    const auto& thresholds_vec = tree.get_thresholds();
+    const auto& knots_vec = tree.get_knots();
+    auto weights = get_weights(indices_cps, knots_vec, thresholds_vec, stereographicProjection3_2(query_point));
+    return get_mapped_points(indices_cps, weights, controlpoints);
+}
+
+std::vector<double> map_points_batch(
+    std::span<const double> query_point,
+    SpaceTree& tree,
+    const std::span<const double> controlpoints
+){
+    int num_queries = static_cast<int>(query_point.size() / 3);
+    std::vector<double> out_mapped(num_queries * 3, 0.0);
+    if (num_queries <= 0) {
+        return out_mapped;
+    }
+
+    const auto& thresholds_vec = tree.get_thresholds();
+    const auto& knots_vec = tree.get_knots();
+
+
+    // for each query, compute weights and mapped points
+    #pragma omp parallel for
+    for (int i = 0; i < num_queries; ++i) {
+        auto indices_cps = tree.query_point(query_point[3 * i], query_point[3 * i+1], query_point[3 * i+2]);
+
+        std::array<double, 2> query_point_plane = stereographicProjection3_2(
+            std::span<const double, 3>(query_point.data() + i * 3, 3)
+        );
+
+        auto weights = get_weights(indices_cps, knots_vec, thresholds_vec, query_point_plane);
+        auto mapped_point = get_mapped_points(indices_cps, weights, controlpoints);
+        out_mapped[i * 3 + 0] = mapped_point[0];
+        out_mapped[i * 3 + 1] = mapped_point[1];
+        out_mapped[i * 3 + 2] = mapped_point[2];
+    }
+
+    return out_mapped;
+}
+
+
+std::array<std::vector<double>, 3> map_points_batch_derivative2(
+    std::span<const double> query_point,
+    SpaceTree& tree,
+    const std::span<const double> controlpoints
+) {
+
+    int num_queries = static_cast<int>(query_point.size() / 3);
+    std::vector<double> _r(num_queries * 3, 0.0);
+	std::vector<double> _rdu(num_queries * 3 * 2, 0.0);
+	std::vector<double> _rdu2(num_queries * 3 * 2 * 2, 0.0);
+
+	TensorView r(std::array<int, 2>{num_queries, 3}, _r);
+	TensorView rdu(std::array<int, 3>{num_queries, 3, 2}, _rdu);
+	TensorView rdu2(std::array<int, 4>{num_queries, 3, 2, 2}, _rdu2);
+
+    const auto& thresholds_vec = tree.get_thresholds();
+    const auto& knots_vec = tree.get_knots();
+
+
+    // for each query, compute weights and mapped points
+#pragma omp parallel for
+    for (int i = 0; i < num_queries; ++i) {
+        auto indices_cps = tree.query_point(query_point[3 * i], query_point[3 * i + 1], query_point[3 * i + 2]);
+
+        std::array<double, 2> query_point_plane = stereographicProjection3_2(
+            std::span<const double, 3>(query_point.data() + i * 3, 3)
+        );
+
+        auto [rdot, rdudot, rdu2dot] = get_weights_derivative2(indices_cps, knots_vec, thresholds_vec, query_point_plane);
+        auto mapped_point = get_mapped_points(indices_cps, rdot, controlpoints);
+        r[{i, 0}] = mapped_point[0];
+        r[{i, 1}] = mapped_point[1];
+        r[{i, 2}] = mapped_point[2];
+
+        // for (int dim1 = 0; dim1 < 3; dim1++) {
+        //     mapped_point = get_mapped_points(indices_cps, { rdudot })
+        // }
+
+    }
+
+    return { _r, _rdu, _rdu2};
+}
+
 
 }

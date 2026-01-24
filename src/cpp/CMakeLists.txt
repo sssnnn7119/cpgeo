@@ -7,6 +7,7 @@ add_library(cpgeo SHARED
     src/triangulation.cpp
     src/sphere_triangulation.cpp
     src/cpgeo_mapping.cpp
+    src/cpgeo_seeding.cpp
     src/space_tree.cpp
     src/tensor.cpp
     src/mesh_utils.cpp
@@ -16,6 +17,7 @@ add_library(cpgeo SHARED
     include/triangulation.h
     include/sphere_triangulation.h
     include/cpgeo_mapping.h
+    include/cpgeo_seeding.h
     include/space_tree.h
     include/tensor.h
     include/mesh_utils.h
@@ -74,6 +76,13 @@ endif()
 # Create the cpgeo executable for testing/demo
 add_executable(cpgeo_demo
     tests/main.cpp
+    src/triangulation.cpp
+    src/sphere_triangulation.cpp
+    src/cpgeo_mapping.cpp
+    src/cpgeo_seeding.cpp
+    src/tensor.cpp
+    src/mesh_utils.cpp
+    src/mesh_edge_flip.cpp
 )
 
 # Include directories for the demo

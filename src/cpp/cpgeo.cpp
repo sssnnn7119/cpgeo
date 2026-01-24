@@ -114,6 +114,7 @@ CPGEO_API cpgeo_handle_t space_tree_create(
     }
 }
 
+static std::vector<std::vector<int>> temp_query_results;
 CPGEO_API int space_tree_query_compute(
     cpgeo_handle_t tree,
     const double* query_points,
@@ -127,14 +128,12 @@ CPGEO_API int space_tree_query_compute(
     try {
         auto* tree_ptr = static_cast<cpgeo::SpaceTree*>(tree);
         std::span<const double> query_span(query_points, num_queries * 3);
-        tree_ptr->compute_indices_batch(query_span);
-
-        const auto& results = tree_ptr->get_query_results();
+        temp_query_results = tree_ptr->query_point_batch(query_span);
 
         // Fill num_results and total_results
         *total_results = 0;
         for (int i = 0; i < num_queries; ++i) {
-            *total_results += static_cast<int>(results[i].size());
+            *total_results += static_cast<int>(temp_query_results[i].size());
         }
 
         return 0;
@@ -162,7 +161,7 @@ CPGEO_API int space_tree_query_get(
 
     try {
         auto* tree_ptr = static_cast<cpgeo::SpaceTree*>(tree);
-        const auto& query_results = tree_ptr->get_query_results();
+        const auto& query_results = temp_query_results;
 
         // Safety check: ensure provided buffer size matches internal count
         size_t total_count = 0;
@@ -184,6 +183,8 @@ CPGEO_API int space_tree_query_get(
             }
             indices_pts[i + 1] = static_cast<int>(offset);  // Next query starts after this one
         }
+
+        temp_query_results.clear(); // Clear temporary storage
 
         return 0;
     } catch (...) {
@@ -288,6 +289,7 @@ CPGEO_API void cpgeo_get_weights_derivative1(
         for(int ptidx=0;ptidx<num_queries;ptidx++){
             int start = indices_pts[ptidx];
             int end = indices_pts[ptidx+1];
+			int num_indices_now = end - start;
             if(end - start <= 0){
                 continue;
             }
@@ -298,10 +300,9 @@ CPGEO_API void cpgeo_get_weights_derivative1(
                 std::span<const double, 2>(query_points + ptidx * 2, 2)
             );
             std::copy(weights.begin(), weights.end(), out_weights + start);
-            for(int i=0;i<end - start;i++){
-                out_weights_du[(start + i)*2 + 0] = weightsdu.at(i, 0);
-                out_weights_du[(start + i)*2 + 1] = weightsdu.at(i, 1);
-            }
+            // copy first derivatives to out_weights_du with layout [2, num_indices]
+            std::copy(weightsdu.begin(), weightsdu.begin() + num_indices_now, out_weights_du + start);
+            std::copy(weightsdu.begin() + num_indices_now, weightsdu.begin() + num_indices_now * 2, out_weights_du + num_indices + start);
         }
     } catch (...) {
         return;
@@ -333,10 +334,11 @@ CPGEO_API void cpgeo_get_weights_derivative2(
         std::span<const double> knots_span(knots, num_knots * 3);
         std::span<const double> thresholds_span(thresholds, num_knots);
 
-        #pragma omp parallel for
+        //#pragma omp parallel for
         for(int ptidx=0;ptidx<num_queries;ptidx++){
             int start = indices_pts[ptidx];
             int end = indices_pts[ptidx+1];
+			int num_indices_now = end - start;
             if(end - start <= 0){
                 continue;
             }
@@ -347,16 +349,19 @@ CPGEO_API void cpgeo_get_weights_derivative2(
                 std::span<const double, 2>(query_points + ptidx * 2, 2)
             );
             std::copy(weights.begin(), weights.end(), out_weights + start);
-            for(int i=0;i<end - start;i++){
-                out_weights_du[(start + i)*2 + 0] = weightsdu.at(i, 0);
-                out_weights_du[(start + i)*2 + 1] = weightsdu.at(i, 1);
-            }
+            // copy first derivatives to out_weights_du with layout [2, num_indices]
+            std::copy(weightsdu.begin(), weightsdu.begin() + num_indices_now, out_weights_du + start);
+            std::copy(weightsdu.begin() + num_indices_now, weightsdu.begin() + num_indices_now * 2, out_weights_du + num_indices + start);
 
-            for(int i=0;i<end - start;i++){
-                for(int j=0;j<2;j++){
-                    for(int k=0;k<2;k++){
-                        out_weights_du2[((start + i)*2 + j)*2 + k] = weightsdu2.at(i, j, k);
-                    }
+            // copy second derivatives to out_weights_du2 with layout [2,2,num_indices]
+            // weightsdu2 organized in blocks (k, j) each of length num_indices_now
+            for (int k = 0; k < 2; ++k) {
+                for (int j = 0; j < 2; ++j) {
+                    std::copy(
+                        weightsdu2.begin() + (k * 2 + j) * num_indices_now,
+                        weightsdu2.begin() + (k * 2 + j + 1) * num_indices_now,
+                        out_weights_du2 + ((k * 2 + j) * num_indices) + start
+                    );
                 }
             }
         }
@@ -381,27 +386,20 @@ CPGEO_API void cpgeo_get_mapped_points(
     }
 
     try {
-        // 初始化输出数组为0
-        std::fill_n(out_mapped_points, num_queries * 3, 0.0);
+        std::span<const int> indices_cps_span(indices_cps, num_indices);
+        std::span<const int> indices_pts_span(indices_pts, num_queries + 1);
+        std::span<const double> weights_span(weights, num_indices);
+        std::span<const double> controlpoints_span(controlpoints, num_controlpoints * 3);
 
-        // 循环计算每个查询点的映射坐标
-        #pragma omp parallel for
-        for (int i = 0; i < num_queries; ++i) {
-            int start = indices_pts[i];
-            int end = indices_pts[i + 1];
+        auto mapped = cpgeo::get_mapped_points_batch(
+            indices_cps_span,
+            indices_pts_span,
+            weights_span,
+            controlpoints_span
+        );
 
-            for (int j = start; j < end; ++j) {
-                int cp_idx = indices_cps[j];
-                double weight = weights[j];
+        std::copy(mapped.begin(), mapped.end(), out_mapped_points);
 
-                // 确保控制点索引有效
-                if (cp_idx >= 0 && cp_idx < num_controlpoints) {
-                    for (int k = 0; k < 3; ++k) {
-                        out_mapped_points[i * 3 + k] += weight * controlpoints[cp_idx * 3 + k];
-                    }
-                }
-            }
-        }
     } catch (...) {
         return;
     }
@@ -605,7 +603,7 @@ extern "C" {
             std::span<const double> vertices_span(vertices, num_vertices * vertices_dim);
             std::span<const int> faces_span(faces_in, num_faces * 3);
             
-            auto optimized_faces = cpgeo::optimize_mesh_by_edge_flipping(
+            auto optimized_faces = cpgeo::mesh_optimize_by_edge_flipping(
                 vertices_span, vertices_dim, faces_span, max_iterations
             );
             

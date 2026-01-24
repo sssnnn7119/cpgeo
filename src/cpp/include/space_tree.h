@@ -32,12 +32,35 @@ public:
      * @param query_points Flat array of coordinates (x1, y1, z1, x2, y2, z2, ...) size M*3
      * @return std::vector<std::vector<int>> List of indices for each query point
      */
-    void compute_indices_batch(const std::span<const double> query_points);
-    const std::vector<std::vector<int>>& get_query_results() const {
-        return query_results;
-    }
+    std::vector<std::vector<int>> query_point_batch(const std::span<const double> query_points);
     
+    /**
+     * @brief Query a single point against the tree
+     * 
+     * @param x X coordinate
+     * @param y Y coordinate
+     * @param z Z coordinate
+     * @return std::vector<int> List of indices of knots influencing the query point
+     */
     std::vector<int> query_point(double x, double y, double z) const;
+
+    /**
+     * @brief Get stored thresholds
+     * 
+     * @return std::vector<double> Copy of threshold storage
+     */
+    const std::vector<double>& get_thresholds() const {
+        return threshold_storage;
+    }
+
+    /**
+     * @brief Get stored knots
+     * 
+     * @return std::vector<double> Copy of knots storage
+     */
+    const std::vector<double>& get_knots() const {
+        return knots_storage;
+    }
 
     void print_tree_structure() const;
     void print_tree_stats() const;
@@ -46,7 +69,6 @@ private:
     std::vector<double> knots_storage;
     std::vector<double> threshold_storage;
     std::unique_ptr<Node> root;
-    std::vector<std::vector<int>> query_results;
 
     static constexpr int MAX_DEPTH = 5;
     static constexpr size_t MAX_POINTS = 100;
