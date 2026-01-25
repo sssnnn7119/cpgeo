@@ -305,6 +305,43 @@ CPGEO_API void cpgeo_map_points_derivative2(
     double* out_rdu2
 );
 
+/*
+ * Uniform remeshing API (two-phase compute/get pattern)
+ *
+ * cpgeo_uniformly_mesh_compute: runs the remeshing and stores results internally.
+ *   - init_vertices_sphere: input initial sphere vertices (size: num_vertices * 3)
+ *   - num_vertices: number of input vertices
+ *   - control_points: control points array (size: num_control_points * 3)
+ *   - num_control_points: number of control points
+ *   - tree: SpaceTree handle
+ *   - seed_size: desired seed size for remeshing
+ *   - max_iterations: maximum iterations for uniforming
+ *   - out_num_vertices: receives number of output vertices
+ *   - out_num_faces: receives number of output faces
+ *   returns 0 on success, non-zero on error
+ */
+CPGEO_API int cpgeo_uniformly_mesh_compute(
+    const double* init_vertices_sphere,
+    int num_vertices,
+    const double* control_points,
+    int num_control_points,
+    cpgeo_handle_t tree,
+    double seed_size,
+    int max_iterations,
+    int* out_num_vertices,
+    int* out_num_faces
+);
+
+/**
+ * cpgeo_uniformly_mesh_get: retrieve results from the last compute call
+ *   - out_vertices: buffer of size out_num_vertices * 3
+ *   - out_faces: buffer of size out_num_faces * 3
+ *   returns 0 on success, non-zero on error
+ */
+CPGEO_API int cpgeo_uniformly_mesh_get(
+    double* out_vertices,
+    int* out_faces
+);
 
 // ==============================================================================================================
 // ================== Mesh Utilities ============================================================================

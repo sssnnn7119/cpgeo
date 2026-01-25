@@ -904,7 +904,35 @@ namespace TestRefineMesh{
         std::cout << "SpaceTree created successfully (" << num_knots << " knots)" << std::endl;
 
 
-		cpgeo::uniformlyMesh(knots, controlpoints, *(cpgeo::SpaceTree*)tree, 1.0, 10);
+		auto [new_knots, new_faces] = cpgeo::uniformlyMesh(knots, controlpoints, *(cpgeo::SpaceTree*)tree, 1.0, 10);
+
+        auto r_new = cpgeo::map_points_batch(new_knots, *(cpgeo::SpaceTree*)tree, controlpoints);
+
+        // Output to OBJ format
+        std::ofstream obj_file("output.obj");
+        if (!obj_file.is_open()) {
+            std::cout << "Failed to open output.obj for writing" << std::endl;
+            return false;
+        }
+
+        // Write vertices
+        int num_vertices = static_cast<int>(r_new.size() / 3);
+        for (int i = 0; i < num_vertices; ++i) {
+            obj_file << "v " << r_new[i * 3] << " " << r_new[i * 3 + 1] << " " << r_new[i * 3 + 2] << "\n";
+        }
+
+        // Write faces
+        int num_faces = static_cast<int>(new_faces.size() / 3);
+        for (int i = 0; i < num_faces; ++i) {
+            // OBJ indices start from 1
+            int v1 = new_faces[i * 3] + 1;
+            int v2 = new_faces[i * 3 + 1] + 1;
+            int v3 = new_faces[i * 3 + 2] + 1;
+            obj_file << "f " << v1 << " " << v2 << " " << v3 << "\n";
+        }
+
+        obj_file.close();
+        std::cout << "OBJ file written to output.obj with " << num_vertices << " vertices and " << num_faces << " faces" << std::endl;
 
         // cleanup
         space_tree_destroy(tree);

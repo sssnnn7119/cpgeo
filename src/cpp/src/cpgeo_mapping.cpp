@@ -424,7 +424,6 @@ std::array<std::vector<double>, 3> get_weights_derivative2(
     const std::span<const double, 2> query_points_plane,
     bool north_pole) {
 
-    const int numCps = knots.size() / 3;
     const int numIndices = indices.size();
 
     std::vector<double> weights(numIndices, 0.0);
@@ -437,59 +436,59 @@ std::array<std::vector<double>, 3> get_weights_derivative2(
 
     auto [query_points, xdu, xdu2] = stereographicProjection2_3Derivative2(query_points_plane, north_pole);
 
+    // Extract query point coordinates once (avoid repeated array access)
+    const double qx = query_points[0];
+    const double qy = query_points[1];
+    const double qz = query_points[2];
+
     // compute the initial weights
-//#pragma omp parallel for
     for (int idx = 0; idx < numIndices; ++idx) {
         int knot_idx = indices[idx];
+        int knot_offset = knot_idx * 3;
 
+        // Direct array access instead of separate variable assignments
+        std::array<double, 3> dp = { 
+            qx - knots[knot_offset], 
+            qy - knots[knot_offset + 1], 
+            qz - knots[knot_offset + 2] 
+        };
 
-        double qx = query_points[0];
-        double qy = query_points[1];
-        double qz = query_points[2];
-
-        double kx = knots[knot_idx * 3];
-        double ky = knots[knot_idx * 3 + 1];
-        double kz = knots[knot_idx * 3 + 2];
-
-        std::array<double, 3> dp = { qx - kx, qy - ky, qz - kz };
-
-        double threshold = thresholds[knot_idx];
-        auto [w, wdx, wdx2] = weightFunctionDerivative2(dp, threshold);
+        auto [w, wdx, wdx2_tensor] = weightFunctionDerivative2(dp, thresholds[knot_idx]);
 
         weights[idx] = w;
-        weight_dx.at(idx, 0) = wdx[0];
-        weight_dx.at(idx, 1) = wdx[1];
-        weight_dx.at(idx, 2) = wdx[2];
-		weight_dx2.at(idx, 0, 0) = wdx2.at(0, 0);
-		weight_dx2.at(idx, 0, 1) = wdx2.at(0, 1);
-		weight_dx2.at(idx, 0, 2) = wdx2.at(0, 2);
-        weight_dx2.at(idx, 1, 0) = wdx2.at(1, 0);
-		weight_dx2.at(idx, 1, 1) = wdx2.at(1, 1);
-		weight_dx2.at(idx, 1, 2) = wdx2.at(1, 2);
-		weight_dx2.at(idx, 2, 0) = wdx2.at(2, 0);
-		weight_dx2.at(idx, 2, 1) = wdx2.at(2, 1);
-		weight_dx2.at(idx, 2, 2) = wdx2.at(2, 2);
+        
+        // Cache weight derivatives to avoid repeated .at() calls
+        double wdx0 = wdx[0], wdx1 = wdx[1], wdx2 = wdx[2];
+        weight_dx.at(idx, 0) = wdx0;
+        weight_dx.at(idx, 1) = wdx1;
+        weight_dx.at(idx, 2) = wdx2;
+        
+        // Use loop for 3x3 matrix assignment (reduce code duplication)
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                weight_dx2.at(idx, i, j) = wdx2_tensor.at(i, j);
+            }
+        }
 
-        weight_sums += weights[idx];
-        weight_sum_dx[0] += weight_dx.at(idx, 0);
-        weight_sum_dx[1] += weight_dx.at(idx, 1);
-        weight_sum_dx[2] += weight_dx.at(idx, 2);
-        weight_sum_dx2.at(0, 0) += weight_dx2.at(idx, 0, 0);
-        weight_sum_dx2.at(0, 1) += weight_dx2.at(idx, 0, 1);
-        weight_sum_dx2.at(0, 2) += weight_dx2.at(idx, 0, 2);
-        weight_sum_dx2.at(1, 0) += weight_dx2.at(idx, 1, 0);
-        weight_sum_dx2.at(1, 1) += weight_dx2.at(idx, 1, 1);
-        weight_sum_dx2.at(1, 2) += weight_dx2.at(idx, 1, 2);
-        weight_sum_dx2.at(2, 0) += weight_dx2.at(idx, 2, 0);
-        weight_sum_dx2.at(2, 1) += weight_dx2.at(idx, 2, 1);
-        weight_sum_dx2.at(2, 2) += weight_dx2.at(idx, 2, 2);
+        // Accumulate sums
+        weight_sums += w;
+        weight_sum_dx[0] += wdx0;
+        weight_sum_dx[1] += wdx1;
+        weight_sum_dx[2] += wdx2;
+        
+        // Accumulate second derivative sums (use direct access to avoid repeated .at())
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                weight_sum_dx2.at(i, j) += wdx2_tensor.at(i, j);
+            }
+        }
     }
 
     if (weight_sums == 0.0) {
         return { weights, std::vector<double>(numIndices * 2, 0.0), std::vector<double>(numIndices * 2 * 2, 0.0) };
     }
 
-    // normalize weights
+    // normalize weights - precompute constants outside loop
     std::vector<double> rdot(numIndices, 0.0);
 	std::vector<double> _rdudot(2 * numIndices, 0.0);
 	std::vector<double> _rdu2dot(2 * 2 * numIndices, 0.0);
@@ -497,49 +496,74 @@ std::array<std::vector<double>, 3> get_weights_derivative2(
 	TensorView2D rdudot(2, numIndices, _rdudot);
 	TensorView3D rdu2dot(2, 2, numIndices, _rdu2dot);
 
+    const double inv_wsum = 1.0 / weight_sums;
+    const double _wsum2 = weight_sums * weight_sums;
+    const double _wsum3 = _wsum2 * weight_sums;
+    const double inv_wsum2 = 1.0 / _wsum2;
+    const double inv_wsum3 = 1.0 / _wsum3;
+
+    std::array<double, 3> _wsumdx_wsum2 = {
+        weight_sum_dx[0] * inv_wsum2,
+        weight_sum_dx[1] * inv_wsum2,
+        weight_sum_dx[2] * inv_wsum2
+    };
+
+    // Cache xdu values to avoid repeated .at() calls
+    double xdu00 = xdu.at(0, 0), xdu01 = xdu.at(0, 1);
+    double xdu10 = xdu.at(1, 0), xdu11 = xdu.at(1, 1);
+    double xdu20 = xdu.at(2, 0), xdu21 = xdu.at(2, 1);
+
     for (int idx = 0; idx < numIndices; ++idx) {
-        int query_idx = indices[idx];
-        if (weight_sums > 0) {
-            rdot[idx] = weights[idx] / weight_sums;
-            std::array<double, 3> rdxdot;
-            rdxdot[0] = (weight_dx.at(idx, 0) / weight_sums) - (weights[idx] * weight_sum_dx[0]) / (weight_sums * weight_sums);
-            rdxdot[1] = (weight_dx.at(idx, 1) / weight_sums) - (weights[idx] * weight_sum_dx[1]) / (weight_sums * weight_sums);
-            rdxdot[2] = (weight_dx.at(idx, 2) / weight_sums) - (weights[idx] * weight_sum_dx[2]) / (weight_sums * weight_sums);
+        double w = weights[idx];
+        rdot[idx] = w * inv_wsum;
+        
+        // Cache weight derivatives for this index
+        double wdx0 = weight_dx.at(idx, 0);
+        double wdx1 = weight_dx.at(idx, 1);
+        double wdx2 = weight_dx.at(idx, 2);
+        
+        std::array<double, 3> rdxdot;
+        rdxdot[0] = wdx0 * inv_wsum - w * _wsumdx_wsum2[0];
+        rdxdot[1] = wdx1 * inv_wsum - w * _wsumdx_wsum2[1];
+        rdxdot[2] = wdx2 * inv_wsum - w * _wsumdx_wsum2[2];
 
-            // chain rule to get derivative respect to plane coordinates
-            rdudot.at(0, idx) = rdxdot[0] * xdu.at(0, 0) + rdxdot[1] * xdu.at(1, 0) + rdxdot[2] * xdu.at(2, 0);
-            rdudot.at(1, idx) = rdxdot[0] * xdu.at(0, 1) + rdxdot[1] * xdu.at(1, 1) + rdxdot[2] * xdu.at(2, 1);
+        // chain rule to get derivative respect to plane coordinates
+        rdudot.at(0, idx) = rdxdot[0] * xdu00 + rdxdot[1] * xdu10 + rdxdot[2] * xdu20;
+        rdudot.at(1, idx) = rdxdot[0] * xdu01 + rdxdot[1] * xdu11 + rdxdot[2] * xdu21;
 
-            Tensor2D rdxdot2(3, 3);
-            for (int dim1 = 0; dim1 < 3; dim1++) {
-                for (int dim2 = 0; dim2 < 3; dim2++) {
-                    rdxdot2.at(dim1, dim2) = 
-                        + (weight_dx2.at(idx, dim1, dim2) / weight_sums)
-                        - (weight_dx.at(idx, dim1) * weight_sum_dx[dim2]) / (weight_sums * weight_sums)
-                        - (weight_dx.at(idx, dim2) * weight_sum_dx[dim1]) / (weight_sums * weight_sums)
-                        - (weights[idx] * weight_sum_dx2.at(dim1, dim2)) / (weight_sums * weight_sums)
-                        + 2 * (weights[idx] * weight_sum_dx[dim1] * weight_sum_dx[dim2]) / (weight_sums * weight_sums * weight_sums);
-                }
+        Tensor2D rdxdot2(3, 3);
+        for (int dim1 = 0; dim1 < 3; dim1++) {
+            double wdx_dim1 = weight_dx.at(idx, dim1);
+
+            double temp = 2.0 * w * weight_sum_dx[dim1] * inv_wsum3;
+            for (int dim2 = 0; dim2 < 3; dim2++) {
+                rdxdot2.at(dim1, dim2) = 
+                    weight_dx2.at(idx, dim1, dim2) * inv_wsum
+                    - wdx_dim1 * _wsumdx_wsum2[dim2]
+                    - weight_dx.at(idx, dim2) * _wsumdx_wsum2[dim1]
+                    - w * weight_sum_dx2.at(dim1, dim2) * inv_wsum2
+                    + temp * weight_sum_dx[dim2];
             }
-            
-            // chain rule to get second derivative respect to plane coordinates
-            for (int dim1 = 0; dim1 < 2; dim1++)
-                for (int dim2 = 0; dim2 < 2; dim2++){
-                    rdu2dot.at(dim1, dim2, idx) = 0;
-
-                    for(int i=0;i<3;++i){
-                        for(int j=0;j<3;++j){
-                            rdu2dot.at(dim1, dim2, idx) += rdxdot2.at(i, j) * xdu.at(i, dim1) * xdu.at(j, dim2);
-                        }
-
-                        rdu2dot.at(dim1, dim2, idx) += rdxdot[i] * xdu2.at(i, dim1, dim2);
-                    }
-                    
-                }
-            
         }
-
-
+        
+        // chain rule to get second derivative respect to plane coordinates
+        for (int dim1 = 0; dim1 < 2; dim1++) {
+            for (int dim2 = 0; dim2 < 2; dim2++) {
+                double sum = 0.0;
+                
+                // Compute rdxdot2 * xdu * xdu term
+                for (int i = 0; i < 3; ++i) {
+                    double xdu_i_dim1 = xdu.at(i, dim1);
+                    for (int j = 0; j < 3; ++j) {
+                        sum += rdxdot2.at(i, j) * xdu_i_dim1 * xdu.at(j, dim2);
+                    }
+                    // Add rdxdot * xdu2 term in the same loop
+                    sum += rdxdot[i] * xdu2.at(i, dim1, dim2);
+                }
+                
+                rdu2dot.at(dim1, dim2, idx) = sum;
+            }
+        }
     }
 
 

@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <iostream>
 #include <cmath>
+#include <omp.h>
 
 namespace cpgeo {
 
@@ -262,30 +263,56 @@ static auto closure_edge_length_surface2plane_derivative2(
 	TensorView rdu2(std::array<const int, 4>{ num_points, 2, 2, 3}, _rdu2);
 
 	// Ldu2 += Ldr2 * rdu * rdu + Ldr * rdu2
-    for (int idx = 0; idx < num_indices_Ldr2; idx++) {
-        int v0_idx = Ldr2_indices[idx * 4 + 0];
-        int v0_dim = Ldr2_indices[idx * 4 + 1];
-        int v1_idx = Ldr2_indices[idx * 4 + 2];
-        int v1_dim = Ldr2_indices[idx * 4 + 3];
-        double value = Ldr2_values[idx];
+	// Use thread-local maps to avoid contention, then merge
+	std::vector<std::unordered_map<std::array<int, 4>, double, Array4IntHash>> thread_maps;
+	int num_threads = 1;
+	#pragma omp parallel
+	{
+		#pragma omp single
+		num_threads = omp_get_num_threads();
+	}
+	thread_maps.resize(num_threads);
+	
+	// Parallel: Ldr2 contribution
+	#pragma omp parallel
+	{
+		int tid = omp_get_thread_num();
+		auto& local_map = thread_maps[tid];
+		
+		#pragma omp for
+		for (int idx = 0; idx < num_indices_Ldr2; idx++) {
+			int v0_idx = Ldr2_indices[idx * 4 + 0];
+			int v0_dim = Ldr2_indices[idx * 4 + 1];
+			int v1_idx = Ldr2_indices[idx * 4 + 2];
+			int v1_dim = Ldr2_indices[idx * 4 + 3];
+			double value = Ldr2_values[idx];
 
-        for (int u0idx = 0; u0idx < 2; u0idx++) {
-            for (int u1idx = 0; u1idx < 2; u1idx++) {
-                Ldu2_map[{v0_idx, u0idx, v1_idx, u1idx}] += value * rdu[{v0_idx, u0idx, v0_dim}] * rdu[{v1_idx, u1idx, v1_dim}];
-            }
-        }
-    }
-
-	// add Ldr * rdu2
-    for(int ptidx = 0; ptidx < num_points; ptidx++) {
-        for (int idim = 0; idim < 3; idim++) {
-            double Ldr_val = Ldr[ptidx * 3 + idim];
-            for (int u0idx = 0; u0idx < 2; u0idx++) {
-                for (int u1idx = 0; u1idx < 2; u1idx++) {
-                    Ldu2_map[{ptidx, u0idx, ptidx, u1idx}] += Ldr_val * rdu2[{ptidx, u0idx, u1idx, idim}];
-                }
-            }
-        }
+			for (int u0idx = 0; u0idx < 2; u0idx++) {
+				for (int u1idx = 0; u1idx < 2; u1idx++) {
+					local_map[{v0_idx, u0idx, v1_idx, u1idx}] += value * rdu[{v0_idx, u0idx, v0_dim}] * rdu[{v1_idx, u1idx, v1_dim}];
+				}
+			}
+		}
+		
+		// Parallel: Ldr * rdu2 contribution
+		#pragma omp for
+		for(int ptidx = 0; ptidx < num_points; ptidx++) {
+			for (int idim = 0; idim < 3; idim++) {
+				double Ldr_val = Ldr[ptidx * 3 + idim];
+				for (int u0idx = 0; u0idx < 2; u0idx++) {
+					for (int u1idx = 0; u1idx < 2; u1idx++) {
+						local_map[{ptidx, u0idx, ptidx, u1idx}] += Ldr_val * rdu2[{ptidx, u0idx, u1idx, idim}];
+					}
+				}
+			}
+		}
+	}
+	
+	// Merge thread-local maps into global map
+	for (const auto& local_map : thread_maps) {
+		for (const auto& [key, val] : local_map) {
+			Ldu2_map[key] += val;
+		}
 	}
 
 	// copy all entries from map to output vectors
@@ -311,6 +338,7 @@ static auto closure_edge_length_surface2plane_derivative2(
 		});
 
 	for (const auto& [key, value] : entries) {
+        if (std::abs(value) < 1e-8) continue; // skip near-zero entries
 		Ldu2_indices.push_back(key[0]);
 		Ldu2_indices.push_back(key[1]);
 		Ldu2_indices.push_back(key[2]);
@@ -322,7 +350,7 @@ static auto closure_edge_length_surface2plane_derivative2(
 	return { loss, Ldu, Ldu2_indices, Ldu2_values };
 }
 
-// COO to CSR sparse matrix conversion
+// COO to CSR sparse matrix conversion (simplified: COO already sorted and merged)
 static void coo_to_csr(
     const std::vector<int>& coo_indices,    // [i0, j0, i1, j1, ...] flattened (pt_idx, dim, pt_idx, dim) tuples
     const std::vector<double>& coo_values,  // corresponding values
@@ -333,53 +361,32 @@ static void coo_to_csr(
 ) {
     int nnz = static_cast<int>(coo_values.size());
     
-    // Convert 4-tuple indices to flat row/col indices
-    std::vector<std::tuple<int, int, double>> triplets;
-    triplets.reserve(nnz);
+    // Convert 4-tuple indices to flat row/col indices (can parallelize)
+    std::vector<int> rows(nnz);
+    csr_col_idx.resize(nnz);
     
+    #pragma omp parallel for
     for (int i = 0; i < nnz; i++) {
-        int pt0 = coo_indices[i * 4 + 0];
-        int dim0 = coo_indices[i * 4 + 1];
-        int pt1 = coo_indices[i * 4 + 2];
-        int dim1 = coo_indices[i * 4 + 3];
-        
-        int row = pt0 * 2 + dim0;
-        int col = pt1 * 2 + dim1;
-        
-        triplets.push_back({row, col, coo_values[i]});
+        rows[i] = coo_indices[i * 4 + 0] * 2 + coo_indices[i * 4 + 1];
+        csr_col_idx[i] = coo_indices[i * 4 + 2] * 2 + coo_indices[i * 4 + 3];
     }
     
-    // Accumulate duplicates and build CSR format
-    csr_row_ptr.clear();
-    csr_col_idx.clear();
-    csr_values.clear();
+    // Copy values directly (already merged in COO)
+    csr_values = coo_values;
     
-    csr_row_ptr.resize(matrix_size + 1, 0);
+    // Build row pointers by scanning rows (COO is already sorted by row, then col)
+    csr_row_ptr.assign(matrix_size + 1, 0);
     
     int current_row = -1;
-    int current_col = -1;
-    
-    for (const auto& [row, col, val] : triplets) {
-        // Fill gaps in row_ptr for empty rows
-        while (current_row < row) {
-            current_row++;
-            csr_row_ptr[current_row] = static_cast<int>(csr_values.size());
-        }
-        
-        // Accumulate if same (row, col)
-        if (row == current_row && col == current_col && !csr_values.empty()) {
-            csr_values.back() += val;
-        } else {
-            csr_col_idx.push_back(col);
-            csr_values.push_back(val);
-            current_col = col;
+    for (int i = 0; i < nnz; i++) {
+        // Fill gaps for empty rows
+        while (current_row < rows[i]) {
+            csr_row_ptr[++current_row] = i;
         }
     }
-    
-    // Fill remaining row pointers
+    // Fill remaining empty rows
     while (current_row < matrix_size) {
-        current_row++;
-        csr_row_ptr[current_row] = static_cast<int>(csr_values.size());
+        csr_row_ptr[++current_row] = nnz;
     }
 }
 
@@ -402,7 +409,7 @@ static void sparse_matvec(
     }
 }
 
-// Conjugate Gradient solver for symmetric positive definite systems
+// Conjugate Gradient solver for symmetric positive definite systems (optimized)
 // Solves: A * x = b, where A is given in CSR format
 static bool conjugate_gradient(
     const std::vector<int>& csr_row_ptr,
@@ -424,7 +431,9 @@ static bool conjugate_gradient(
     r = b;
     p = r;
     
+    // Compute initial residual norm with parallel reduction
     double rs_old = 0.0;
+    #pragma omp parallel for reduction(+:rs_old)
     for (int i = 0; i < n; i++) {
         rs_old += r[i] * r[i];
     }
@@ -437,8 +446,9 @@ static bool conjugate_gradient(
         // Ap = A * p
         sparse_matvec(csr_row_ptr, csr_col_idx, csr_values, p, Ap);
         
-        // alpha = rs_old / (p^T * Ap)
+        // alpha = rs_old / (p^T * Ap) - parallel reduction
         double pAp = 0.0;
+        #pragma omp parallel for reduction(+:pAp)
         for (int i = 0; i < n; i++) {
             pAp += p[i] * Ap[i];
         }
@@ -449,17 +459,13 @@ static bool conjugate_gradient(
         
         double alpha = rs_old / pAp;
         
-        // x = x + alpha * p
-        // r = r - alpha * Ap
+        // Fused update: x += alpha*p, r -= alpha*Ap, compute rs_new
+        double rs_new = 0.0;
+        #pragma omp parallel for reduction(+:rs_new)
         for (int i = 0; i < n; i++) {
             x[i] += alpha * p[i];
             r[i] -= alpha * Ap[i];
-        }
-        
-        // Check convergence
-        double rs_new = 0.0;
-        for (int i = 0; i < n; i++) {
-            rs_new += r[i] * r[i];
+            rs_new += r[i] * r[i];  // fuse residual computation
         }
         
         if (std::sqrt(rs_new) < tol) {
@@ -470,6 +476,7 @@ static bool conjugate_gradient(
         double beta = rs_new / rs_old;
         
         // p = r + beta * p
+        #pragma omp parallel for
         for (int i = 0; i < n; i++) {
             p[i] = r[i] + beta * p[i];
         }
@@ -644,7 +651,7 @@ void vertice_smoothing(
 
     const int max_newton_iters = 20;
     const double loss_tol = 1e-6;
-    const double grad_tol = 1e-5;
+    const double grad_tol = 1e-3;
     
     double prev_loss = std::numeric_limits<double>::infinity();
     
@@ -771,13 +778,22 @@ std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
         std::cout << "  - Mesh uniforming loop " << loop + 1 << "/" << max_iterations << std::endl;
 
         // refine mesh by edge flipping
-        //faces = mesh_optimize_by_edge_flipping(vertices_sphere, 3, faces, 100);
+        faces = mesh_optimize_by_edge_flipping(vertices_sphere, 3, faces, 100);
+
+        // insert/delete points
+        auto faces_new = insert_delete_points(vertices_sphere, control_points, tree, seed_size);
+
+        if (faces_new.size() == faces.size()) {
+            std::cout << "    No more insertions/deletions, stopping." << std::endl;
+            break;
+        } else {
+            faces = faces_new;
+            std::cout << "    Updated mesh: " << vertices_sphere.size() / 3 << " vertices, " << faces.size() / 3 << " faces." << std::endl;
+		}
 
         // refine mesh by vertex smoothing
         vertice_smoothing(vertices_sphere, faces, control_points, tree);
 
-        // insert/delete points
-        faces = insert_delete_points(vertices_sphere, control_points, tree, seed_size);
 
     }
 

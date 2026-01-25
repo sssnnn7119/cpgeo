@@ -3,6 +3,7 @@
 #include "sphere_triangulation.h"
 #include "space_tree.h"
 #include "cpgeo_mapping.h"
+#include "cpgeo_seeding.h"
 #include "mesh_edge_flip.h"
 #include <memory>
 #include <algorithm>
@@ -461,6 +462,62 @@ CPGEO_API void cpgeo_map_points_derivative2(
 
     } catch (...) {
         return;
+    }
+}
+
+// uniformlyMesh C API: compute + get pattern
+static std::vector<double> temp_uniform_vertices;
+static std::vector<int> temp_uniform_faces;
+
+CPGEO_API int cpgeo_uniformly_mesh_compute(
+    const double* init_vertices_sphere,
+    int num_vertices,
+    const double* control_points,
+    int num_control_points,
+    cpgeo_handle_t tree,
+    double seed_size,
+    int max_iterations,
+    int* out_num_vertices,
+    int* out_num_faces
+) {
+    if (!init_vertices_sphere || !control_points || !tree || !out_num_vertices || !out_num_faces || num_vertices <= 0 || num_control_points <= 0 || max_iterations <= 0) {
+        return -1;
+    }
+
+    try {
+        std::span<double> init_sp(const_cast<double*>(init_vertices_sphere), num_vertices * 3);
+        std::span<const double> control_sp(control_points, num_control_points * 3);
+        auto* tree_ptr = static_cast<cpgeo::SpaceTree*>(tree);
+
+        auto result = cpgeo::uniformlyMesh(init_sp, control_sp, *tree_ptr, seed_size, max_iterations);
+        temp_uniform_vertices = std::move(std::get<0>(result));
+        temp_uniform_faces = std::move(std::get<1>(result));
+
+        *out_num_vertices = static_cast<int>(temp_uniform_vertices.size() / 3);
+        *out_num_faces = static_cast<int>(temp_uniform_faces.size() / 3);
+
+        return 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
+CPGEO_API int cpgeo_uniformly_mesh_get(
+    double* out_vertices,
+    int* out_faces
+) {
+    if (!out_vertices || !out_faces) return -1;
+    if (temp_uniform_vertices.empty() || temp_uniform_faces.empty()) return -2;
+
+    try {
+        std::copy(temp_uniform_vertices.begin(), temp_uniform_vertices.end(), out_vertices);
+        std::copy(temp_uniform_faces.begin(), temp_uniform_faces.end(), out_faces);
+        // Clear temporary storage to avoid accidental reuse
+        temp_uniform_vertices.clear();
+        temp_uniform_faces.clear();
+        return 0;
+    } catch (...) {
+        return -1;
     }
 }
 

@@ -149,7 +149,53 @@ class CPGEO:
         mapped_points_cpp = capi.get_mapped_points(indices_cps, indices_pts, w, self._control_points, points.shape[0])
 
         return mapped_points_cpp
-    
+
+    def uniformly_mesh(self, init_vertices: np.ndarray = None, seed_size: float = 1.0, max_iterations: int = 10, update_self: bool = False):
+        """
+        Run uniform remeshing using the C API wrapper `capi.uniformly_mesh`.
+
+        Args:
+            init_vertices (np.ndarray, optional): Initial sphere vertices (N,3). If None, uses current knots as starting vertices.
+            seed_size (float): Desired seed size for remeshing.
+            max_iterations (int): Maximum number of uniforming iterations.
+            update_self (bool): If True, replace the model's knots and faces with the remeshed result and rebuild the space tree.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: (vertices (M,3), faces (F,3)) from the remeshing.
+        """
+        # Ensure control points are present
+        if self._control_points is None or self._control_points.size == 0:
+            raise RuntimeError("Control points are not set. Call CPGEO(...) with valid control points.")
+
+        # If no initial vertices provided, use current knots (initialize if needed)
+        if init_vertices is None:
+            if self._knots is None or self._knots.size == 0:
+                self.initialize()
+            init_vertices = self._knots
+
+        # Ensure space tree exists
+        if self._space_tree is None:
+            self.initialize()
+
+        new_vertices, new_faces = capi.uniformly_mesh(
+            init_vertices,
+            self._control_points,
+            self._space_tree,
+            seed_size,
+            max_iterations
+        )
+
+        if update_self:
+            # update internal state and rebuild thresholds & space tree
+            self._knots = new_vertices
+            self._cp_faces = new_faces
+            # recompute thresholds and rebuild space tree
+            self._thresholds = capi.compute_thresholds(self._knots, k=self._knot_influence_num)
+            if self._space_tree is not None:
+                capi.space_tree_destroy(self._space_tree)
+            self._space_tree = capi.space_tree_create(self._knots, self._thresholds)
+
+        return new_vertices, new_faces    
     
 
     def show(self):

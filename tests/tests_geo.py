@@ -28,44 +28,34 @@ surf = cpgeo.CPGEO(control_points=cps, cp_faces=faces)
 t0 = time.time()
 surf.initialize()
 
-np.savetxt('knots.txt', surf._knots, delimiter=',')
-np.savetxt('control_points.txt', surf.control_points, delimiter=',')
-
-t1 = time.time()
-print("Initialization time:", t1 - t0)
-
-
-query_points_sphere = surf._knots
-query_points_plane = surf.reference_to_curvilinear(query_points_sphere)
-
-
-with timer("Map points init", iterations=100):
-    indices_cps, indices_pts, w, wdu, wdu2 = surf.get_weights2(query_points_plane=query_points_plane, derivative=2)
-
-    query_points_u0pos = query_points_plane.copy()
-    query_points_u0pos[:, 0] += 1e-6
-
-    # indices_cps_pos, indices_pts_pos, w_pos, wdu_pos, wdu2_pos = surf.get_weights2(query_points_plane=query_points_u0pos, derivative=2)
-
-with timer("Map points", iterations=100):
-    r0 = cpgeo.capi.get_mapped_points(indices_cps, indices_pts, w, surf.control_points, query_points_plane.shape[0])
-    # r1 = cpgeo.capi.get_mapped_points(indices_cps_pos, indices_pts_pos, w_pos, surf.control_points, query_points_plane.shape[0])
-
-    rdu0 = np.stack([
-        cpgeo.capi.get_mapped_points(indices_cps, indices_pts, wdu[0], surf.control_points, query_points_plane.shape[0]),
-        cpgeo.capi.get_mapped_points(indices_cps, indices_pts, wdu[1], surf.control_points, query_points_plane.shape[0])
-    ], axis=-1)
-
-with timer("Map points derivative2 C++", iterations=100):
-    _r, _rdu, _rdu2 = cpgeo.capi.map_points_derivative2(query_points=query_points_sphere,
-                                                        tree_handle=surf._space_tree,
-                                                        controlpoints=surf.control_points,)
 
 
 # rdu0_fd = (r1 - r0) / 1e-6
 
-surf.show()
-surf.show_control_points()
-surf.show_knots()
+# surf.show()
+# surf.show_control_points()
+# surf.show_knots()
+
+# Run uniform remeshing and visualize the updated surface
+with timer("Uniform remeshing", iterations=1):
+    new_vertices, new_faces = surf.uniformly_mesh(seed_size=1.0, max_iterations=10, update_self=False)
+
+print(f"  New vertices: {new_vertices.shape}, New faces: {new_faces.shape}")
+
+# Map the new vertices via the model (to physical/control-point space)
+with timer("Mapping new vertices", iterations=1):
+    mapped_new = surf.map3(new_vertices)
+
+print(f"  Mapped vertices: {mapped_new.shape}")
+
+# Visualize mapped new surface with PyVista
+try:
+    import pyvista as pv
+    mesh = pv.PolyData(mapped_new, np.hstack([np.full((new_faces.shape[0], 1), 3), new_faces]))
+    plotter = pv.Plotter()
+    plotter.add_mesh(mesh, color='lightcoral', show_edges=True, opacity=1.0)
+    plotter.show()
+except Exception as e:
+    print("PyVista plotting failed:", e)
 
 raise NotImplementedError("Test case under construction.")

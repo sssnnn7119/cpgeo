@@ -173,6 +173,26 @@ _lib.cpgeo_get_mapped_points.argtypes = [
 ]
 _lib.cpgeo_get_mapped_points.restype = None
 
+# cpgeo_uniformly_mesh_compute/get
+_lib.cpgeo_uniformly_mesh_compute.argtypes = [
+    ctypes.POINTER(ctypes.c_double),  # init_vertices_sphere
+    ctypes.c_int,                     # num_vertices
+    ctypes.POINTER(ctypes.c_double),  # control_points
+    ctypes.c_int,                     # num_control_points
+    cpgeo_handle_t,                   # tree
+    ctypes.c_double,                  # seed_size
+    ctypes.c_int,                     # max_iterations
+    ctypes.POINTER(ctypes.c_int),     # out_num_vertices
+    ctypes.POINTER(ctypes.c_int)      # out_num_faces
+]
+_lib.cpgeo_uniformly_mesh_compute.restype = ctypes.c_int
+
+_lib.cpgeo_uniformly_mesh_get.argtypes = [
+    ctypes.POINTER(ctypes.c_double),  # out_vertices
+    ctypes.POINTER(ctypes.c_int)      # out_faces
+]
+_lib.cpgeo_uniformly_mesh_get.restype = ctypes.c_int
+
 # cpgeo_map_points_derivative2
 _lib.cpgeo_map_points_derivative2.argtypes = [
     ctypes.POINTER(ctypes.c_double),  # query_points
@@ -791,6 +811,56 @@ def get_mesh_edges(elements: np.ndarray) -> np.ndarray:
     result = _lib.mesh_edges_get(out_edges_ptr)
     
     return out_edges.reshape(-1, 3)
+
+
+def uniformly_mesh(init_vertices: np.ndarray, control_points: np.ndarray, tree_handle: cpgeo_handle_t, seed_size: float = 1.0, max_iterations: int = 10):
+    """Uniformly remesh a sphere surface starting from initial vertices.
+
+    Args:
+        init_vertices: Initial sphere vertices as array shape (n, 3) or flat (3n,)
+        control_points: Control points array shape (m, 3)
+        tree_handle: SpaceTree handle
+        seed_size: desired seed size
+        max_iterations: max uniforming iterations
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: (vertices (num_vertices,3), faces (num_faces,3))
+    """
+    init_flat = np.ascontiguousarray(init_vertices.flatten(), dtype=np.float64)
+    control_flat = np.ascontiguousarray(control_points.flatten(), dtype=np.float64)
+
+    num_vertices = len(init_flat) // 3
+    num_control = len(control_flat) // 3
+
+    # First call compute to get output sizes
+    out_num_vertices = ctypes.c_int()
+    out_num_faces = ctypes.c_int()
+
+    _lib.cpgeo_uniformly_mesh_compute(
+        init_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        ctypes.c_int(num_vertices),
+        control_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        ctypes.c_int(num_control),
+        tree_handle,
+        ctypes.c_double(seed_size),
+        ctypes.c_int(max_iterations),
+        ctypes.byref(out_num_vertices),
+        ctypes.byref(out_num_faces)
+    )
+
+    if out_num_vertices.value <= 0 or out_num_faces.value <= 0:
+        return np.zeros((0,3)), np.zeros((0,3), dtype=np.int32)
+
+    out_vertices = np.zeros(out_num_vertices.value * 3, dtype=np.float64)
+    out_faces = np.zeros(out_num_faces.value * 3, dtype=np.int32)
+
+    # Call get to fetch data
+    _lib.cpgeo_uniformly_mesh_get(
+        out_vertices.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        out_faces.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    )
+
+    return out_vertices.reshape((out_num_vertices.value, 3)), out_faces.reshape((out_num_faces.value, 3))
 
 
 def extract_boundary_loops(triangles: np.ndarray) -> List[np.ndarray]:

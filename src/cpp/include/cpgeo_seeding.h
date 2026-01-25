@@ -13,8 +13,15 @@
 
 namespace cpgeo {
 
-
-    void vertice_smoothing(
+/** 
+ * @brief Smooth the vertices of a spherical mesh to improve uniformity
+ * 
+ * @param vertices_sphere Sphere vertices (flat array of x,y,z coordinates)
+ * @param faces Face indices (triplets of vertex indices)
+ * @param control_points Control points influencing the mesh (flat array of x,y,z coordinates)
+ * @param tree SpaceTree for efficient spatial queries
+ */
+void vertice_smoothing(
     std::vector<double>& vertices_sphere,
     std::span<int> faces,
     std::span<const double> control_points,
