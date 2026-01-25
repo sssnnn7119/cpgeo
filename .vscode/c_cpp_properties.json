@@ -1,0 +1,19 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${default}",
+                "${workspaceFolder}/src/cpp/include",
+                "${workspaceFolder}/include"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "compilerPath": "A:/MineData/Learning/Code/environments/llvm-mingw-20251118-ucrt-x86_64/bin/clang++.exe"
+        }
+    ],
+    "version": 4
+}

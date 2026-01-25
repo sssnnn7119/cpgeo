@@ -1,13 +1,35 @@
 [project]
 name = "cpgeo"
-version = "0.1.0"
-description = "Add your description here"
+version = "1.0.0"
+description = "A library for control points-based surface."
 readme = "README.md"
 requires-python = ">=3.12"
+authors = [
+    { name = "Song Zenan", email = "243919588@qq.com" }
+]
 dependencies = [
-    "torch>=2.2.0",
-    "torchvision>=0.17.0",
     "pypardiso>=0.4.7",
-    "scipy>=1.16.3",
-    "pyvista>=0.43.0",
+    "scipy>=1.17.0",
+    "pyvista>=0.46.5",
+    "numba>=0.63.1",
+    "numpy>=2.0.0",
+    "networkx>=3.6.1",
+]
+
+[tool.setuptools]
+include-package-data = true
+package-dir = {"" = "src/python"}
+
+[tool.setuptools.packages.find]
+where = ["src/python"]
+
+[tool.setuptools.package-data]
+# 将 DLL 文件打包进去
+bspmap = [
+    "*.dll",           # Windows
+    "*.so",            # Linux
+    "*.dylib",         # macOS
+    "bin/*.dll",
+    "lib/*.so",
+    "lib/*.dylib",
 ]
