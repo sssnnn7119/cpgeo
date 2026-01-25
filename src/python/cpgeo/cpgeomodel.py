@@ -1,5 +1,6 @@
 
 import numpy as np
+from scipy.optimize._minimize import new_constraint_to_old
 
 from . import capi, utils
 import pyvista as pv
@@ -197,6 +198,18 @@ class CPGEO:
 
         return new_vertices, new_faces    
     
+
+    def refine_surface(self, seed_size: float = 1.0, max_iterations: int = 10):
+        new_vertices, new_faces = self.uniformly_mesh(init_vertices=self._knots, seed_size=seed_size, max_iterations=max_iterations)
+        
+        new_control_points = self.map3(new_vertices)
+
+        self._control_points = new_control_points
+        self._cp_faces = new_faces
+
+        self.initialize()
+
+        
 
     def show(self):
         r = self.map3(self._knots)
