@@ -13,6 +13,14 @@
 
 namespace cpgeo {
 
+
+    void vertice_smoothing(
+    std::vector<double>& vertices_sphere,
+    std::span<int> faces,
+    std::span<const double> control_points,
+    SpaceTree& tree
+);
+
 /** 
  * @brief Generate a uniformly meshed sphere surface based on initial vertices and control points
  * 

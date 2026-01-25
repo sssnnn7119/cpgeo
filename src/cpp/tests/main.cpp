@@ -910,15 +910,62 @@ namespace TestRefineMesh{
         space_tree_destroy(tree);
         return true;
     }
+
+    bool simpletest(){
+        int num_knots_dim = 10;
+        double knot_limit = 2.0;
+
+        std::vector<double> knots(num_knots_dim * num_knots_dim * num_knots_dim * 3, 0.0);
+        std::vector<double> thresholds(num_knots_dim * num_knots_dim * num_knots_dim, 0.6);
+
+        for (int x = 0; x < num_knots_dim; ++x) {
+            for (int y = 0; y < num_knots_dim; ++y) {
+                for (int z = 0; z < num_knots_dim; ++z) {
+                    int idx = (x * num_knots_dim * num_knots_dim + y * num_knots_dim + z);
+                    knots[idx * 3 + 0] = -knot_limit + (2.0 * knot_limit / (num_knots_dim - 1)) * x + 0.01;
+                    knots[idx * 3 + 1] = -knot_limit + (2.0 * knot_limit / (num_knots_dim - 1)) * y;
+                    knots[idx * 3 + 2] = -knot_limit + (2.0 * knot_limit / (num_knots_dim - 1)) * z;
+                }
+            }
+        }
+
+        auto tree = space_tree_create(
+            knots.data(),
+            static_cast<int>(knots.size() / 3),
+            thresholds.data()
+        );
+
+        std::vector<double> nodes(3*3);
+
+        auto point_sphere = cpgeo::stereographicProjection2_3(std::array<double, 2>({-2., 0.}));
+		nodes[0] = point_sphere[0];
+		nodes[1] = point_sphere[1];
+		nodes[2] = point_sphere[2];
+		point_sphere = cpgeo::stereographicProjection2_3(std::array<double, 2>({ 2., 0. }));
+        nodes[3] = point_sphere[0];
+        nodes[4] = point_sphere[1];
+        nodes[5] = point_sphere[2];
+        point_sphere = cpgeo::stereographicProjection2_3(std::array<double, 2>({ 0., 1. }));
+        nodes[6] = point_sphere[0];
+        nodes[7] = point_sphere[1];
+        nodes[8] = point_sphere[2];
+        
+
+        std::vector<int> faces = {0, 1, 2};
+
+        cpgeo::vertice_smoothing(nodes, faces, knots, *(cpgeo::SpaceTree*)tree);
+
+        return true;
+    }
 }
 
 int main() {
 
     // TestSpaceTree::test_performance();
     // TestTriangulationPlain::test_mesh();
-     TestWeight::test_weight_function();   
-    // TestEdgeRefinement::test_refinement(); 
-    //TestRefineMesh::test_remesh_build_spacetree();
+     //TestWeight::test_weight_function();   
+     //TestEdgeRefinement::test_refinement(); 
+    TestRefineMesh::test_remesh_build_spacetree();
 
 
     return 0;

@@ -173,6 +173,30 @@ _lib.cpgeo_get_mapped_points.argtypes = [
 ]
 _lib.cpgeo_get_mapped_points.restype = None
 
+# cpgeo_map_points_derivative2
+_lib.cpgeo_map_points_derivative2.argtypes = [
+    ctypes.POINTER(ctypes.c_double),  # query_points
+    cpgeo_handle_t,                   # tree
+    ctypes.POINTER(ctypes.c_double),  # controlpoints
+    ctypes.c_int,                     # num_controlpoints
+    ctypes.c_int,                     # num_queries
+    ctypes.POINTER(ctypes.c_double),  # out_r
+    ctypes.POINTER(ctypes.c_double),  # out_rdu
+    ctypes.POINTER(ctypes.c_double)   # out_rdu2
+]
+_lib.cpgeo_map_points_derivative2.restype = None
+
+# cpgeo_map_points (batch default)
+_lib.cpgeo_map_points.argtypes = [
+    ctypes.POINTER(ctypes.c_double),  # query_points
+    cpgeo_handle_t,                   # tree
+    ctypes.POINTER(ctypes.c_double),  # controlpoints
+    ctypes.c_int,                     # num_controlpoints
+    ctypes.c_int,                     # num_queries
+    ctypes.POINTER(ctypes.c_double)   # out_mapped_points
+]
+_lib.cpgeo_map_points.restype = None
+
 # mesh_edges_compute
 _lib.mesh_edges_compute.argtypes = [
     ctypes.POINTER(ctypes.c_int),     # elements
@@ -663,6 +687,79 @@ def get_mapped_points(indices_cps: np.ndarray, indices_pts: np.ndarray,
     return out_mapped_points.reshape((num_queries, 3))
 
 
+def map_points_derivative2(query_points: np.ndarray, tree_handle: cpgeo_handle_t, controlpoints: np.ndarray):
+    """Compute mapped points and derivatives for batch of queries using a SpaceTree handle.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray, np.ndarray]: (r, rdu, rdu2) with shapes
+            - r: (num_queries, 3)
+            - rdu: (num_queries, 2, 3)
+            - rdu2: (num_queries, 2, 2, 3)
+    """
+    query_points = query_points.flatten()
+    if len(query_points) % 3 != 0:
+        raise ValueError("query_points length must be multiple of 3")
+
+    num_queries = len(query_points) // 3
+    num_controlpoints = controlpoints.shape[0]
+
+    query_points_flat = np.ascontiguousarray(query_points, dtype=np.float64)
+    query_points_ptr = query_points_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    controlpoints_flat = np.ascontiguousarray(controlpoints, dtype=np.float64).flatten()
+    controlpoints_ptr = controlpoints_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    out_r = np.zeros(num_queries * 3, dtype=np.float64)
+    out_rdu = np.zeros(num_queries * 2 * 3, dtype=np.float64)
+    out_rdu2 = np.zeros(num_queries * 2 * 2 * 3, dtype=np.float64)
+
+    _lib.cpgeo_map_points_derivative2(
+        query_points_ptr,
+        tree_handle,
+        controlpoints_ptr,
+        ctypes.c_int(num_controlpoints),
+        ctypes.c_int(num_queries),
+        out_r.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        out_rdu.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        out_rdu2.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    )
+
+    return out_r.reshape((num_queries, 3)), out_rdu.reshape((num_queries, 2, 3)), out_rdu2.reshape((num_queries, 2, 2, 3))
+
+
+def map_points(query_points: np.ndarray, tree_handle: cpgeo_handle_t, controlpoints: np.ndarray):
+    """Compute mapped points for batch queries using a SpaceTree handle.
+
+    Returns:
+        np.ndarray: mapped points with shape (num_queries, 3)
+    """
+    query_points = query_points.flatten()
+    if len(query_points) % 3 != 0:
+        raise ValueError("query_points length must be multiple of 3")
+
+    num_queries = len(query_points) // 3
+    num_controlpoints = controlpoints.shape[0]
+
+    query_points_flat = np.ascontiguousarray(query_points, dtype=np.float64)
+    query_points_ptr = query_points_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    controlpoints_flat = np.ascontiguousarray(controlpoints, dtype=np.float64).flatten()
+    controlpoints_ptr = controlpoints_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    out_r = np.zeros(num_queries * 3, dtype=np.float64)
+
+    _lib.cpgeo_map_points(
+        query_points_ptr,
+        tree_handle,
+        controlpoints_ptr,
+        ctypes.c_int(num_controlpoints),
+        ctypes.c_int(num_queries),
+        out_r.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    )
+
+    return out_r.reshape((num_queries, 3))
+
+
 def get_mesh_edges(elements: np.ndarray) -> np.ndarray:
     """Compute mesh edges from triangular elements.
     
@@ -908,6 +1005,8 @@ __all__ = [
     'get_weights_derivative1',
     'get_weights_derivative2',
     'get_mapped_points',
+    'map_points',
+    'map_points_derivative2',
     'get_mesh_edges',
     'extract_boundary_loops',
     'get_mesh_closure_edge_length_derivative0',

@@ -257,6 +257,54 @@ CPGEO_API void cpgeo_get_mapped_points(
     double* out_mapped_points
 );
 
+/**
+ * @brief Compute mapped points for a batch of query points (default batch interface)
+ *
+ * This is the simple batch mapping: given query points and a SpaceTree handle, compute
+ * the mapped coordinates for each query point.
+ *
+ * @param query_points Flat array of 3D query coordinates [x0,y0,z0,...]
+ * @param tree SpaceTree handle
+ * @param controlpoints Flat array of 3D control point coordinates [x0,y0,z0,...]
+ * @param num_controlpoints Number of control points
+ * @param num_queries Number of query points
+ * @param out_mapped_points Output array for mapped coordinates (size: num_queries * 3)
+ */
+CPGEO_API void cpgeo_map_points(
+    const double* query_points,
+    cpgeo_handle_t tree,
+    const double* controlpoints,
+    int num_controlpoints,
+    int num_queries,
+    double* out_mapped_points
+);
+
+/**
+ * @brief Compute mapped points and its first/second derivatives for a batch of query points
+ *
+ * Computes mapped points r, first derivatives rdu (shape: [num_queries, 2, 3]) and
+ * second derivatives rdu2 (shape: [num_queries, 2, 2, 3]).
+ *
+ * @param query_points Flat array of 3D query coordinates [x0,y0,z0,...]
+ * @param tree SpaceTree handle
+ * @param controlpoints Flat array of 3D control point coordinates [x0,y0,z0,...]
+ * @param num_controlpoints Number of control points
+ * @param num_queries Number of query points
+ * @param out_r Output array for mapped coordinates (size: num_queries * 3)
+ * @param out_rdu Output array for first derivatives (size: num_queries * 2 * 3)
+ * @param out_rdu2 Output array for second derivatives (size: num_queries * 2 * 2 * 3)
+ */
+CPGEO_API void cpgeo_map_points_derivative2(
+    const double* query_points,
+    cpgeo_handle_t tree,
+    const double* controlpoints,
+    int num_controlpoints,
+    int num_queries,
+    double* out_r,
+    double* out_rdu,
+    double* out_rdu2
+);
+
 
 // ==============================================================================================================
 // ================== Mesh Utilities ============================================================================

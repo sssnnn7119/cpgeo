@@ -1,4 +1,7 @@
 #include "cpgeo_seeding.h"
+#include <algorithm>
+#include <iostream>
+#include <cmath>
 
 namespace cpgeo {
 
@@ -241,7 +244,8 @@ static auto closure_edge_length_surface2plane_derivative2(
 
     std::vector<double> Ldu(num_points * 2, 0.0);
 
-	TensorView rdu(std::array<const int, 3>{ num_points, 3, 2}, _rdu);
+	// rdu layout: [num_points, 2 plane dims, 3 space dims]
+	TensorView rdu(std::array<const int, 3>{ num_points, 2, 3}, _rdu);
 
     std::unordered_map<std::array<int, 4>, double, Array4IntHash> Ldu2_map; // (pt_idx1, dim1, pt_idx2, dim2) -> value
 
@@ -249,12 +253,13 @@ static auto closure_edge_length_surface2plane_derivative2(
     for (int ptidx = 0; ptidx < num_points; ptidx++) {
         for (int iidx = 0; iidx < 3; iidx++) {
 			for (int uidx = 0; uidx < 2; uidx++) {
-                Ldu[ptidx * 2 + uidx] += Ldr[ptidx * 3 + iidx] * rdu[{ptidx, iidx, uidx}];
+                Ldu[ptidx * 2 + uidx] += Ldr[ptidx * 3 + iidx] * rdu[{ptidx, uidx, iidx}];
             }
         }
     }
 
-	TensorView rdu2(std::array<const int, 4>{ num_points, 3, 2, 2}, _rdu2);
+	// rdu2 layout: [num_points, 2 plane dims, 2 plane dims, 3 space dims]
+	TensorView rdu2(std::array<const int, 4>{ num_points, 2, 2, 3}, _rdu2);
 
 	// Ldu2 += Ldr2 * rdu * rdu + Ldr * rdu2
     for (int idx = 0; idx < num_indices_Ldr2; idx++) {
@@ -266,7 +271,7 @@ static auto closure_edge_length_surface2plane_derivative2(
 
         for (int u0idx = 0; u0idx < 2; u0idx++) {
             for (int u1idx = 0; u1idx < 2; u1idx++) {
-                Ldu2_map[{v0_idx, u0idx, v1_idx, u1idx}] += value * rdu[{v0_idx, v0_dim, u0idx}] * rdu[{v1_idx, v1_dim, u1idx}];
+                Ldu2_map[{v0_idx, u0idx, v1_idx, u1idx}] += value * rdu[{v0_idx, u0idx, v0_dim}] * rdu[{v1_idx, u1idx, v1_dim}];
             }
         }
     }
@@ -277,7 +282,7 @@ static auto closure_edge_length_surface2plane_derivative2(
             double Ldr_val = Ldr[ptidx * 3 + idim];
             for (int u0idx = 0; u0idx < 2; u0idx++) {
                 for (int u1idx = 0; u1idx < 2; u1idx++) {
-                    Ldu2_map[{ptidx, u0idx, ptidx, u1idx}] += Ldr_val * rdu2[{ptidx, idim, u0idx, u1idx}];
+                    Ldu2_map[{ptidx, u0idx, ptidx, u1idx}] += Ldr_val * rdu2[{ptidx, u0idx, u1idx, idim}];
                 }
             }
         }
@@ -290,60 +295,457 @@ static auto closure_edge_length_surface2plane_derivative2(
 	Ldu2_indices.reserve(Ldu2_map.size() * 4);
 	Ldu2_values.reserve(Ldu2_map.size());
 
-    for (const auto& [key, value] : Ldu2_map) {
-        Ldu2_indices.push_back(key[0]);
-        Ldu2_indices.push_back(key[1]);
-        Ldu2_indices.push_back(key[2]);
-        Ldu2_indices.push_back(key[3]);
-        Ldu2_values.push_back(value);
+	// Collect entries and sort by key for deterministic output
+	std::vector<std::pair<std::array<int,4>, double>> entries;
+	entries.reserve(Ldu2_map.size());
+	for (const auto& kv : Ldu2_map) {
+		entries.push_back(kv);
+	}
+	std::sort(entries.begin(), entries.end(),
+		[](const auto& a, const auto& b) {
+			const auto& ka = a.first; const auto& kb = b.first;
+			if (ka[0] != kb[0]) return ka[0] < kb[0];
+			if (ka[1] != kb[1]) return ka[1] < kb[1];
+			if (ka[2] != kb[2]) return ka[2] < kb[2];
+			return ka[3] < kb[3];
+		});
+
+	for (const auto& [key, value] : entries) {
+		Ldu2_indices.push_back(key[0]);
+		Ldu2_indices.push_back(key[1]);
+		Ldu2_indices.push_back(key[2]);
+		Ldu2_indices.push_back(key[3]);
+		Ldu2_values.push_back(value);
+		//std::cout<< "indices: ("<< key[0]<<","<< key[1]<<","<< key[2]<<","<< key[3]<<") value: "<< value <<std::endl;
 	}
 
 	return { loss, Ldu, Ldu2_indices, Ldu2_values };
 }
 
-static void vertice_smoothing(
+// COO to CSR sparse matrix conversion
+static void coo_to_csr(
+    const std::vector<int>& coo_indices,    // [i0, j0, i1, j1, ...] flattened (pt_idx, dim, pt_idx, dim) tuples
+    const std::vector<double>& coo_values,  // corresponding values
+    int matrix_size,                         // total number of variables (num_points * 2)
+    std::vector<int>& csr_row_ptr,          // output: row pointers [0, nnz_row0, nnz_row0+nnz_row1, ...]
+    std::vector<int>& csr_col_idx,          // output: column indices
+    std::vector<double>& csr_values         // output: values
+) {
+    int nnz = static_cast<int>(coo_values.size());
+    
+    // Convert 4-tuple indices to flat row/col indices
+    std::vector<std::tuple<int, int, double>> triplets;
+    triplets.reserve(nnz);
+    
+    for (int i = 0; i < nnz; i++) {
+        int pt0 = coo_indices[i * 4 + 0];
+        int dim0 = coo_indices[i * 4 + 1];
+        int pt1 = coo_indices[i * 4 + 2];
+        int dim1 = coo_indices[i * 4 + 3];
+        
+        int row = pt0 * 2 + dim0;
+        int col = pt1 * 2 + dim1;
+        
+        triplets.push_back({row, col, coo_values[i]});
+    }
+    
+    // Accumulate duplicates and build CSR format
+    csr_row_ptr.clear();
+    csr_col_idx.clear();
+    csr_values.clear();
+    
+    csr_row_ptr.resize(matrix_size + 1, 0);
+    
+    int current_row = -1;
+    int current_col = -1;
+    
+    for (const auto& [row, col, val] : triplets) {
+        // Fill gaps in row_ptr for empty rows
+        while (current_row < row) {
+            current_row++;
+            csr_row_ptr[current_row] = static_cast<int>(csr_values.size());
+        }
+        
+        // Accumulate if same (row, col)
+        if (row == current_row && col == current_col && !csr_values.empty()) {
+            csr_values.back() += val;
+        } else {
+            csr_col_idx.push_back(col);
+            csr_values.push_back(val);
+            current_col = col;
+        }
+    }
+    
+    // Fill remaining row pointers
+    while (current_row < matrix_size) {
+        current_row++;
+        csr_row_ptr[current_row] = static_cast<int>(csr_values.size());
+    }
+}
+
+// Sparse matrix-vector multiplication: y = A * x (CSR format)
+static void sparse_matvec(
+    const std::vector<int>& csr_row_ptr,
+    const std::vector<int>& csr_col_idx,
+    const std::vector<double>& csr_values,
+    const std::vector<double>& x,
+    std::vector<double>& y
+) {
+    int n = static_cast<int>(x.size());
+    y.assign(n, 0.0);
+    
+    #pragma omp parallel for
+    for (int i = 0; i < n; i++) {
+        for (int j = csr_row_ptr[i]; j < csr_row_ptr[i + 1]; j++) {
+            y[i] += csr_values[j] * x[csr_col_idx[j]];
+        }
+    }
+}
+
+// Conjugate Gradient solver for symmetric positive definite systems
+// Solves: A * x = b, where A is given in CSR format
+static bool conjugate_gradient(
+    const std::vector<int>& csr_row_ptr,
+    const std::vector<int>& csr_col_idx,
+    const std::vector<double>& csr_values,
+    const std::vector<double>& b,
+    std::vector<double>& x,
+    int max_iter = 1000,
+    double tol = 1e-6
+) {
+    int n = static_cast<int>(b.size());
+    x.assign(n, 0.0);
+    
+    std::vector<double> r(n);
+    std::vector<double> p(n);
+    std::vector<double> Ap(n);
+    
+    // r = b - A*x (initially r = b since x = 0)
+    r = b;
+    p = r;
+    
+    double rs_old = 0.0;
+    for (int i = 0; i < n; i++) {
+        rs_old += r[i] * r[i];
+    }
+    
+    if (std::sqrt(rs_old) < tol) {
+        return true; // Already solved
+    }
+    
+    for (int iter = 0; iter < max_iter; iter++) {
+        // Ap = A * p
+        sparse_matvec(csr_row_ptr, csr_col_idx, csr_values, p, Ap);
+        
+        // alpha = rs_old / (p^T * Ap)
+        double pAp = 0.0;
+        for (int i = 0; i < n; i++) {
+            pAp += p[i] * Ap[i];
+        }
+        
+        if (std::abs(pAp) < 1e-20) {
+            return false; // Numerical breakdown
+        }
+        
+        double alpha = rs_old / pAp;
+        
+        // x = x + alpha * p
+        // r = r - alpha * Ap
+        for (int i = 0; i < n; i++) {
+            x[i] += alpha * p[i];
+            r[i] -= alpha * Ap[i];
+        }
+        
+        // Check convergence
+        double rs_new = 0.0;
+        for (int i = 0; i < n; i++) {
+            rs_new += r[i] * r[i];
+        }
+        
+        if (std::sqrt(rs_new) < tol) {
+            return true; // Converged
+        }
+        
+        // beta = rs_new / rs_old
+        double beta = rs_new / rs_old;
+        
+        // p = r + beta * p
+        for (int i = 0; i < n; i++) {
+            p[i] = r[i] + beta * p[i];
+        }
+        
+        rs_old = rs_new;
+
+        //if (iter % 50 == 0) {
+        //    std::cout << "      CG iter " << iter << ": residual = " << std::sqrt(rs_old) << std::endl;
+        //}
+    }
+    
+    return false; // Did not converge
+}
+
+// Compute loss only (without derivatives)
+static double compute_loss_only(
+    std::vector<double>& vertices_sphere,
+    SpaceTree& tree,
+    const std::span<const double> control_points,
+    std::span<const int> edges,
+    bool north_pole
+) {
+    auto r = map_points_batch(vertices_sphere, tree, control_points, north_pole);
+    double loss = closure_edge_length_derivative0(std::span<double>(r.data(), r.size()), 3, edges, 4);
+    return loss;
+}
+
+static std::vector<double> newton_step(
+    std::vector<double>& vertices_sphere, 
+    SpaceTree& tree, 
+    std::span<const double> control_points, 
+    std::span<const int> edges, 
+    bool north_pole
+){
+
+    auto [r, rdu, rdu2] = map_points_batch_derivative2(vertices_sphere, tree, control_points, north_pole);
+    auto [loss, Ldu, Ldu2_indices, Ldu2_values] = closure_edge_length_surface2plane_derivative2(
+        std::span<double>(r.data(), r.size()),
+        std::span<double>(rdu.data(), rdu.size()),
+        std::span<double>(rdu2.data(), rdu2.size()),
+        edges,
+        4
+    );
+    
+    int num_points = static_cast<int>(vertices_sphere.size()) / 3;
+    int num_variables = num_points * 2; // each point has 2 UV variables
+    
+    // Build index_remain: filter points based on z coordinate
+    // North pole: keep z < 0.5, South pole: keep z > -0.5
+    std::vector<bool> point_keep(num_points, false);
+    int num_keep_points = 0;
+    
+    for (int ptidx = 0; ptidx < num_points; ptidx++) {
+        double z = vertices_sphere[ptidx * 3 + 2];
+        bool keep = north_pole ? (z < 0.5) : (z > -0.5);
+        point_keep[ptidx] = keep;
+        if (keep) num_keep_points++;
+    }
+    
+    int num_keep_variables = num_keep_points * 2;
+    
+    // Build mapping: old variable index -> new variable index
+    // Variable index: ptidx * 2 + dim (dim = 0 for u, 1 for v)
+    std::vector<int> old_to_new(num_variables, -1);
+    int new_var_idx = 0;
+    
+    for (int ptidx = 0; ptidx < num_points; ptidx++) {
+        if (point_keep[ptidx]) {
+            old_to_new[ptidx * 2 + 0] = new_var_idx++;
+            old_to_new[ptidx * 2 + 1] = new_var_idx++;
+        }
+    }
+    
+    // Filter first derivative (gradient)
+    std::vector<double> Ldu_filtered(num_keep_variables, 0.0);
+    for (int ptidx = 0; ptidx < num_points; ptidx++) {
+        if (point_keep[ptidx]) {
+            for (int dim = 0; dim < 2; dim++) {
+                int old_idx = ptidx * 2 + dim;
+                int new_idx = old_to_new[old_idx];
+                Ldu_filtered[new_idx] = Ldu[old_idx];
+            }
+        }
+    }
+    
+    // Filter second derivative (Hessian) and remap indices
+    std::vector<int> Ldu2_indices_filtered;
+    std::vector<double> Ldu2_values_filtered;
+    
+    int num_hessian_entries = static_cast<int>(Ldu2_values.size());
+    for (int idx = 0; idx < num_hessian_entries; idx++) {
+        int pt0 = Ldu2_indices[idx * 4 + 0];
+        int dim0 = Ldu2_indices[idx * 4 + 1];
+        int pt1 = Ldu2_indices[idx * 4 + 2];
+        int dim1 = Ldu2_indices[idx * 4 + 3];
+        
+        // Keep only if both points are kept
+        if (point_keep[pt0] && point_keep[pt1]) {
+            int old_var0 = pt0 * 2 + dim0;
+            int old_var1 = pt1 * 2 + dim1;
+            int new_var0 = old_to_new[old_var0];
+            int new_var1 = old_to_new[old_var1];
+            
+            // Convert to flat indices for CSR conversion
+            Ldu2_indices_filtered.push_back(new_var0 / 2); // new point index
+            Ldu2_indices_filtered.push_back(new_var0 % 2); // dimension
+            Ldu2_indices_filtered.push_back(new_var1 / 2); // new point index
+            Ldu2_indices_filtered.push_back(new_var1 % 2); // dimension
+            Ldu2_values_filtered.push_back(Ldu2_values[idx]);
+        }
+    }
+    
+    // Convert filtered COO to CSR format for Hessian
+    std::vector<int> csr_row_ptr, csr_col_idx;
+    std::vector<double> csr_values;
+    coo_to_csr(Ldu2_indices_filtered, Ldu2_values_filtered, num_keep_variables, csr_row_ptr, csr_col_idx, csr_values);
+
+    
+    // Set up RHS: -gradient (using filtered gradient)
+    std::vector<double> rhs(num_keep_variables);
+    for (int i = 0; i < num_keep_variables; i++) {
+        rhs[i] = -Ldu_filtered[i];
+    }
+    
+    // Solve Hessian * delta_uv = -gradient using conjugate gradient
+    std::vector<double> delta_uv_filtered;
+    bool converged = conjugate_gradient(csr_row_ptr, csr_col_idx, csr_values, rhs, delta_uv_filtered, 100000, 1e-8);
+    
+    if (!converged) {
+        std::cout << "    Warning: CG did not converge, using gradient descent step" << std::endl;
+        // Fallback to gradient descent
+        delta_uv_filtered = rhs;
+        double scale = 0.01; // small step size
+        for (auto& v : delta_uv_filtered) v *= scale;
+    }
+    
+    // Expand delta_uv back to full size (set filtered-out variables to 0)
+    std::vector<double> delta_uv(num_variables, 0.0);
+    for (int ptidx = 0; ptidx < num_points; ptidx++) {
+        if (point_keep[ptidx]) {
+            for (int dim = 0; dim < 2; dim++) {
+                int old_idx = ptidx * 2 + dim;
+                int new_idx = old_to_new[old_idx];
+                delta_uv[old_idx] = delta_uv_filtered[new_idx];
+            }
+        }
+    }
+    
+    return delta_uv;
+}
+
+
+void vertice_smoothing(
     std::vector<double>& vertices_sphere,
     std::span<int> faces,
     std::span<const double> control_points,
     SpaceTree& tree
 ){
 	int num_points = static_cast<int>(vertices_sphere.size()) / 3;
-	std::vector<double> _r(num_points * 3, 0.0);
-	std::vector<double> _rdu(num_points * 3 * 2, 0.0);
-	std::vector<double> _rdu2(num_points * 3 * 2 * 2, 0.0);
 
-	TensorView r(std::array<const int, 2>{ num_points, 3 }, _r);
-	TensorView rdu(std::array<const int, 3>{ num_points, 3, 2 }, _rdu);
-	TensorView rdu2(std::array<const int, 4>{ num_points, 3, 2, 2 }, _rdu2);
+	auto edges_map = extractEdgesWithNumber(faces);
+
+	std::vector<int> edges;
+	edges.reserve(edges_map.size() * 2);
+    for (const auto& [edge, count] : edges_map) {
+        edges.push_back(edge.first);
+        edges.push_back(edge.second);
+	}
 
 	auto knots = tree.get_knots();
 	auto thresholds = tree.get_thresholds();
 
-    while (true) {
+    const int max_newton_iters = 20;
+    const double loss_tol = 1e-6;
+    const double grad_tol = 1e-5;
+    
+    double prev_loss = std::numeric_limits<double>::infinity();
+    
+    for(int loop = 0; loop < max_newton_iters; loop++){
+        bool north_pole = loop % 2 == 0;
 
-
-
-        for (int ptidx = 0; ptidx < num_points; ptidx++) {
-
-			auto vertices_plane = stereographicProjection3_2(std::span<const double, 3>(vertices_sphere.data() + ptidx * 3, 3));
-
-            auto indices_cp = tree.query_point(
-                vertices_sphere[ptidx * 3 + 0],
-                vertices_sphere[ptidx * 3 + 1],
-                vertices_sphere[ptidx * 3 + 2]
-            );
-
-            auto [rdot, rdudot, rdu2dot] = get_weights_derivative2(indices_cp, knots, thresholds, vertices_plane);
-
-            auto rnow = get_mapped_points(indices_cp, rdot, control_points);
-			r[{ptidx, 0}] = rnow[0];
-			r[{ptidx, 1}] = rnow[1];
-			r[{ptidx, 2}] = rnow[2];
-
+        
+        
+        // Compute newton step (returns delta in UV space)
+        auto delta_uv = newton_step(vertices_sphere, tree, control_points, std::span<const int>(edges.data(), edges.size()), north_pole);
+        
+        // Compute current loss
+        double current_loss = compute_loss_only(vertices_sphere, tree, control_points, std::span<const int>(edges.data(), edges.size()), north_pole);
+        
+        std::cout << "    Newton iter " << loop << ": loss = " << current_loss;
+        
+        // Check gradient norm for convergence
+        double grad_norm = 0.0;
+        for (double v : delta_uv) {
+            grad_norm += v * v;
         }
-
+        grad_norm = std::sqrt(grad_norm);
+        std::cout << ", grad_norm = " << grad_norm;
+        
+        if (grad_norm < grad_tol) {
+            std::cout << " -> Converged (small gradient)" << std::endl;
+            break;
+        }
+        
+        // Backtracking line search
+        double step_size = 1.0;
+        const double beta = 0.5;  // step size reduction factor
+        const int max_backtracks = 10;
+        
+        std::vector<double> vertices_backup = vertices_sphere;
+        bool step_accepted = false;
+        
+        for (int bt = 0; bt < max_backtracks; bt++) {
+            // Apply update: convert delta_uv to sphere coordinates
+            // For each point, we have delta in UV plane, need to update sphere position
+            vertices_sphere = vertices_backup; // restore
+            
+            for (int ptidx = 0; ptidx < num_points; ptidx++) {
+                // Get current sphere position
+                std::array<double, 3> sphere_pos = {
+                    vertices_sphere[ptidx * 3 + 0],
+                    vertices_sphere[ptidx * 3 + 1],
+                    vertices_sphere[ptidx * 3 + 2]
+                };
+                
+                // Project to plane
+                auto uv_pos = stereographicProjection3_2(
+                    std::span<const double, 3>(sphere_pos.data(), 3),
+                    north_pole
+                );
+                
+                // Apply step in UV space
+                uv_pos[0] += step_size * delta_uv[ptidx * 2 + 0];
+                uv_pos[1] += step_size * delta_uv[ptidx * 2 + 1];
+                
+                // Project back to sphere
+                auto new_sphere_pos = stereographicProjection2_3(
+                    std::span<const double, 2>(uv_pos.data(), 2),
+                    north_pole
+                );
+                
+                // Normalize to unit sphere
+                double norm = std::sqrt(
+                    new_sphere_pos[0] * new_sphere_pos[0] +
+                    new_sphere_pos[1] * new_sphere_pos[1] +
+                    new_sphere_pos[2] * new_sphere_pos[2]
+                );
+                
+                if (norm > 1e-10) {
+                    vertices_sphere[ptidx * 3 + 0] = new_sphere_pos[0] / norm;
+                    vertices_sphere[ptidx * 3 + 1] = new_sphere_pos[1] / norm;
+                    vertices_sphere[ptidx * 3 + 2] = new_sphere_pos[2] / norm;
+                }
+            }
+            
+            // Compute new loss
+            double new_loss = compute_loss_only(vertices_sphere, tree, control_points, std::span<const int>(edges.data(), edges.size()), north_pole);
+            
+            // Accept step if loss decreased
+            if (new_loss < current_loss) {
+                std::cout << " -> step_size = " << step_size << ", new_loss = " << new_loss << std::endl;
+                step_accepted = true;
+                prev_loss = new_loss;
+                break;
+            }
+            
+            // Reduce step size
+            step_size *= beta;
+        }
+        
+        if (!step_accepted) {
+            std::cout << " -> Line search failed, restoring" << std::endl;
+            vertices_sphere = vertices_backup;
+            break; // No progress possible
+        }
     }
-
 }
 
 

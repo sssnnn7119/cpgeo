@@ -405,6 +405,65 @@ CPGEO_API void cpgeo_get_mapped_points(
     }
 }
 
+CPGEO_API void cpgeo_map_points(
+    const double* query_points,
+    cpgeo_handle_t tree,
+    const double* controlpoints,
+    int num_controlpoints,
+    int num_queries,
+    double* out_mapped_points
+) {
+    if (!query_points || !tree || !controlpoints || !out_mapped_points || num_controlpoints <= 0 || num_queries <= 0) {
+        return;
+    }
+
+    try {
+        auto* tree_ptr = static_cast<cpgeo::SpaceTree*>(tree);
+        std::span<const double> query_span(query_points, num_queries * 3);
+        std::span<const double> cp_span(controlpoints, num_controlpoints * 3);
+
+        auto mapped = cpgeo::map_points_batch(query_span, *tree_ptr, cp_span);
+        std::copy(mapped.begin(), mapped.end(), out_mapped_points);
+
+    } catch (...) {
+        return;
+    }
+}
+
+CPGEO_API void cpgeo_map_points_derivative2(
+    const double* query_points,
+    cpgeo_handle_t tree,
+    const double* controlpoints,
+    int num_controlpoints,
+    int num_queries,
+    double* out_r,
+    double* out_rdu,
+    double* out_rdu2
+) {
+    if (!query_points || !tree || !controlpoints || !out_r || !out_rdu || !out_rdu2 || num_controlpoints <= 0 || num_queries <= 0) {
+        return;
+    }
+
+    try {
+        auto* tree_ptr = static_cast<cpgeo::SpaceTree*>(tree);
+        std::span<const double> query_span(query_points, num_queries * 3);
+        std::span<const double> cp_span(controlpoints, num_controlpoints * 3);
+
+        auto result = cpgeo::map_points_batch_derivative2(query_span, *tree_ptr, cp_span);
+        const auto& r = result[0];
+        const auto& rdu = result[1];
+        const auto& rdu2 = result[2];
+
+        // copy results to outputs
+        std::copy(r.begin(), r.end(), out_r);
+        std::copy(rdu.begin(), rdu.end(), out_rdu);
+        std::copy(rdu2.begin(), rdu2.end(), out_rdu2);
+
+    } catch (...) {
+        return;
+    }
+}
+
 }  // extern "C"
 
 
