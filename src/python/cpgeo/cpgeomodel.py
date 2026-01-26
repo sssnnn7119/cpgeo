@@ -1,6 +1,5 @@
 
 import numpy as np
-from scipy.optimize._minimize import new_constraint_to_old
 
 from . import capi, utils
 import pyvista as pv
@@ -375,9 +374,6 @@ class CPGEO:
 
         index_half1, boundary_points_index, faces1, faces2 = CPGEO._split_mesh(faces)
 
-        while boundary_points_index[0] != 5:
-            boundary_points_index = np.roll(boundary_points_index, 1)
-
         index_half1_ = np.array(
             list(
                 set(index_half1.tolist()) -
@@ -481,3 +477,34 @@ class CPGEO:
             points = points.astype(np.float64)
         self._control_points = points
 
+
+    def save(self, file):
+        """Save the CPGEO model to a file.
+
+        Args:
+            file (str | file-like): Path to the file or a file-like object (e.g., BytesIO).
+        """
+        np.savez_compressed(
+            file,
+            control_points=self._control_points,
+            cp_faces=self._cp_faces,
+            knot_influence_num=self._knot_influence_num
+        )
+
+    @staticmethod
+    def load(file) -> 'CPGEO':
+        """Load a CPGEO model from a file.
+
+        Args:
+            file (str | file-like): Path to the file or a file-like object (e.g., BytesIO).
+        Returns:
+            CPGEO: The loaded CPGEO model.
+        """
+        data = np.load(file)
+        model = CPGEO(
+            control_points=data['control_points'],
+            cp_faces=data['cp_faces'],
+            knot_influence_num=int(data['knot_influence_num'])
+        )
+        model.initialize()
+        return model

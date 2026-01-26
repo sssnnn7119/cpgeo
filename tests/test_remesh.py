@@ -11,20 +11,18 @@ import cpgeo
 
 if __name__ == "__main__":
     
-    data = np.load('tests/testdata.npz')
+    # data = np.load('tests/testdata.npz')
 
-    cps = data['control_points'].T
-    faces = data['mesh_elements']
+    # cps = data['control_points'].T
+    # faces = data['mesh_elements']
 
 
-    surf = cpgeo.CPGEO(control_points=cps, cp_faces=faces)
+    surf = cpgeo.CPGEO.load('tests/Surface-1_iter-4.npz')
 
     surf.initialize()
 
-    r = surf.map3(surf._knots)
+    surf.refine_surface(seed_size=1.0, max_iterations=5)
 
-    edges = cpgeo.capi.get_mesh_edges(faces)[:, :2]
-
-    length = ((r[edges[:, 0]] - r[edges[:, 1]])**2).sum(axis=1)**0.5
+    surf.show()
 
     assert False

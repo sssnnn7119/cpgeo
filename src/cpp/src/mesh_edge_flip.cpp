@@ -65,6 +65,26 @@ inline double compute_min_angle(
     return std::min({angle0, angle1, angle2});
 }
 
+// Compute normal vector of a triangle
+inline std::array<double, 3> compute_normal(
+    const double* v0, const double* v1, const double* v2, int dim)
+{
+    std::array<double, 3> e01{}, e02{};
+    for (int d = 0; d < std::min(dim, 3); ++d) {
+        e01[d] = v1[d] - v0[d];
+        e02[d] = v2[d] - v0[d];
+    }
+    
+    // Cross product: e01 x e02
+    std::array<double, 3> normal{
+        e01[1] * e02[2] - e01[2] * e02[1],
+        e01[2] * e02[0] - e01[0] * e02[2],
+        e01[0] * e02[1] - e01[1] * e02[0]
+    };
+    
+    return normal;
+}
+
 // Check if flipping an edge would improve mesh quality
 // Returns true if flip is beneficial, false otherwise
 inline bool should_flip_edge(
@@ -90,6 +110,26 @@ inline bool should_flip_edge(
     const double* p_opp1 = &vertices[v_opp1 * vertices_dim];
     const double* p_shared0 = &vertices[v_shared0 * vertices_dim];
     const double* p_shared1 = &vertices[v_shared1 * vertices_dim];
+    
+    // Compute normals before flip
+    auto normal_before_0 = compute_normal(p_opp0, p_shared0, p_shared1, vertices_dim);
+    auto normal_before_1 = compute_normal(p_opp1, p_shared1, p_shared0, vertices_dim);
+    
+    // Compute normals after flip (new edge: v_opp0 <-> v_opp1)
+    auto normal_after_0 = compute_normal(p_opp0, p_opp1, p_shared0, vertices_dim);
+    auto normal_after_1 = compute_normal(p_opp1, p_opp0, p_shared1, vertices_dim);
+    
+    // Check if normals would flip direction (dot product becomes negative)
+    double dot0 = 0.0, dot1 = 0.0;
+    for (int d = 0; d < 3; ++d) {
+        dot0 += normal_before_0[d] * normal_after_0[d];
+        dot1 += normal_before_1[d] * normal_after_1[d];
+    }
+    
+    // Reject flip if it would reverse normal direction
+    if (dot0 < 0.0 || dot1 < 0.0) {
+        return false;
+    }
     
     // Compute minimum angles before flip
     double min_angle_before_0 = compute_min_angle(p_opp0, p_shared0, p_shared1, vertices_dim);

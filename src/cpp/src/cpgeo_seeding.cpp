@@ -504,6 +504,116 @@ static double compute_loss_only(
     return loss;
 }
 
+// Evaluate volume of the mesh
+static double evaluate_volume(
+    std::span<const double> vertices_sphere,
+    std::span<const int> faces){
+    
+    double volume = 0.0;
+    int num_faces = static_cast<int>(faces.size()) / 3;
+    for (int fidx = 0; fidx < num_faces; fidx++) {
+        int v0_idx = faces[fidx * 3 + 0];
+        int v1_idx = faces[fidx * 3 + 1];
+        int v2_idx = faces[fidx * 3 + 2];
+
+        std::span<const double, 3> v0(vertices_sphere.data() + v0_idx * 3, 3);
+        std::span<const double, 3> v1(vertices_sphere.data() + v1_idx * 3, 3);
+        std::span<const double, 3> v2(vertices_sphere.data() + v2_idx * 3, 3);
+
+        // Volume contribution from tetrahedron formed by triangle and origin
+        double vol = (v0[0] * (v1[1] * v2[2] - v1[2] * v2[1]) -
+                      v0[1] * (v1[0] * v2[2] - v1[2] * v2[0]) +
+                      v0[2] * (v1[0] * v2[1] - v1[1] * v2[0])) / 6.0;
+        volume += vol;
+    }
+    return std::abs(volume);
+}
+
+// Backtracking line search with volume preservation
+// Returns: (step_accepted, final_step_size, final_loss)
+static std::tuple<bool, double, double> backtracking_line_search(
+    std::vector<double>& vertices_sphere,
+    const std::vector<double>& vertices_backup,
+    const std::vector<double>& delta_uv,
+    double current_loss,
+    double initial_volume,
+    std::span<int> faces,
+    SpaceTree& tree,
+    const std::span<const double> control_points,
+    std::span<const int> edges,
+    bool north_pole,
+    int max_backtracks = 30,
+    double beta = 0.5,
+    bool check_volume = true
+) {
+    int num_points = static_cast<int>(vertices_sphere.size()) / 3;
+    double step_size = 1.0;
+    
+    for (int bt = 0; bt < max_backtracks; bt++) {
+        // Apply update: convert delta_uv to sphere coordinates
+        vertices_sphere = vertices_backup; // restore
+        
+        for (int ptidx = 0; ptidx < num_points; ptidx++) {
+            // Get current sphere position
+            std::array<double, 3> sphere_pos = {
+                vertices_sphere[ptidx * 3 + 0],
+                vertices_sphere[ptidx * 3 + 1],
+                vertices_sphere[ptidx * 3 + 2]
+            };
+            
+            // Project to plane
+            auto uv_pos = stereographicProjection3_2(
+                std::span<const double, 3>(sphere_pos.data(), 3),
+                north_pole
+            );
+            
+            // Apply step in UV space
+            uv_pos[0] += step_size * delta_uv[ptidx * 2 + 0];
+            uv_pos[1] += step_size * delta_uv[ptidx * 2 + 1];
+            
+            // Project back to sphere
+            auto new_sphere_pos = stereographicProjection2_3(
+                std::span<const double, 2>(uv_pos.data(), 2),
+                north_pole
+            );
+            
+            // Normalize to unit sphere
+            double norm = std::sqrt(
+                new_sphere_pos[0] * new_sphere_pos[0] +
+                new_sphere_pos[1] * new_sphere_pos[1] +
+                new_sphere_pos[2] * new_sphere_pos[2]
+            );
+            
+            if (norm > 1e-10) {
+                vertices_sphere[ptidx * 3 + 0] = new_sphere_pos[0] / norm;
+                vertices_sphere[ptidx * 3 + 1] = new_sphere_pos[1] / norm;
+                vertices_sphere[ptidx * 3 + 2] = new_sphere_pos[2] / norm;
+            }
+        }
+        
+        // Compute new loss
+        double new_loss = compute_loss_only(vertices_sphere, tree, control_points, edges, north_pole);
+        
+        // Check volume preservation if requested
+        bool volume_ok = true;
+        if (check_volume) {
+            double current_volume = evaluate_volume(std::span<const double>(vertices_sphere.data(), vertices_sphere.size()), faces);
+            double volume_ratio = std::abs(initial_volume - current_volume) / initial_volume;
+            volume_ok = (volume_ratio < 0.015);
+        }
+        
+        // Accept step if loss decreased and volume is preserved
+        if (new_loss < current_loss && volume_ok) {
+            return {true, step_size, new_loss};
+        }
+        
+        // Reduce step size
+        step_size *= beta;
+    }
+    
+    return {false, 0.0, current_loss};
+}
+
 static std::vector<double> newton_step(
     std::vector<double>& vertices_sphere, 
     SpaceTree& tree, 
@@ -628,7 +738,6 @@ static std::vector<double> newton_step(
     return delta_uv;
 }
 
-
 void vertice_smoothing(
     std::vector<double>& vertices_sphere,
     std::span<int> faces,
@@ -654,6 +763,9 @@ void vertice_smoothing(
     const double grad_tol = 1e-3;
     
     double prev_loss = std::numeric_limits<double>::infinity();
+
+    // Initial volume
+    double initial_volume = evaluate_volume(std::span<const double>(vertices_sphere.data(), vertices_sphere.size()), faces);
     
     for(int loop = 0; loop < max_newton_iters; loop++){
         bool north_pole = loop % 2 == 0;
@@ -682,75 +794,40 @@ void vertice_smoothing(
         }
         
         // Backtracking line search
-        double step_size = 1.0;
         const double beta = 0.5;  // step size reduction factor
-        const int max_backtracks = 10;
+        const int max_backtracks = 30;
         
         std::vector<double> vertices_backup = vertices_sphere;
-        bool step_accepted = false;
         
-        for (int bt = 0; bt < max_backtracks; bt++) {
-            // Apply update: convert delta_uv to sphere coordinates
-            // For each point, we have delta in UV plane, need to update sphere position
-            vertices_sphere = vertices_backup; // restore
-            
-            for (int ptidx = 0; ptidx < num_points; ptidx++) {
-                // Get current sphere position
-                std::array<double, 3> sphere_pos = {
-                    vertices_sphere[ptidx * 3 + 0],
-                    vertices_sphere[ptidx * 3 + 1],
-                    vertices_sphere[ptidx * 3 + 2]
-                };
-                
-                // Project to plane
-                auto uv_pos = stereographicProjection3_2(
-                    std::span<const double, 3>(sphere_pos.data(), 3),
-                    north_pole
-                );
-                
-                // Apply step in UV space
-                uv_pos[0] += step_size * delta_uv[ptidx * 2 + 0];
-                uv_pos[1] += step_size * delta_uv[ptidx * 2 + 1];
-                
-                // Project back to sphere
-                auto new_sphere_pos = stereographicProjection2_3(
-                    std::span<const double, 2>(uv_pos.data(), 2),
-                    north_pole
-                );
-                
-                // Normalize to unit sphere
-                double norm = std::sqrt(
-                    new_sphere_pos[0] * new_sphere_pos[0] +
-                    new_sphere_pos[1] * new_sphere_pos[1] +
-                    new_sphere_pos[2] * new_sphere_pos[2]
-                );
-                
-                if (norm > 1e-10) {
-                    vertices_sphere[ptidx * 3 + 0] = new_sphere_pos[0] / norm;
-                    vertices_sphere[ptidx * 3 + 1] = new_sphere_pos[1] / norm;
-                    vertices_sphere[ptidx * 3 + 2] = new_sphere_pos[2] / norm;
-                }
-            }
-            
-            // Compute new loss
-            double new_loss = compute_loss_only(vertices_sphere, tree, control_points, std::span<const int>(edges.data(), edges.size()), north_pole);
-            
-            // Accept step if loss decreased
-            if (new_loss < current_loss) {
-                std::cout << " -> step_size = " << step_size << ", new_loss = " << new_loss << std::endl;
-                step_accepted = true;
-                prev_loss = new_loss;
-                break;
-            }
-            
-            // Reduce step size
-            step_size *= beta;
-        }
+        auto [step_accepted, step_size, new_loss] = backtracking_line_search(
+            vertices_sphere, vertices_backup, delta_uv, current_loss, initial_volume,
+            faces, tree, control_points, std::span<const int>(edges.data(), edges.size()),
+            north_pole, max_backtracks, beta, true
+        );
         
-        if (!step_accepted) {
-            std::cout << " -> Line search failed, restoring" << std::endl;
-            vertices_sphere = vertices_backup;
-            break; // No progress possible
+        if (step_accepted) {
+            std::cout << " -> step_size = " << step_size << ", new_loss = " << new_loss << std::endl;
+            prev_loss = new_loss;
+        } else {
+            // Try opposite direction
+            std::cout << " -> Line search failed, trying opposite direction" << std::endl;
+            std::vector<double> delta_uv_opposite = delta_uv;
+            for (auto& v : delta_uv_opposite) v = -v;
+            
+            auto [step_accepted_opp, step_size_opp, new_loss_opp] = backtracking_line_search(
+                vertices_sphere, vertices_backup, delta_uv_opposite, current_loss, initial_volume,
+                faces, tree, control_points, std::span<const int>(edges.data(), edges.size()),
+                north_pole, max_backtracks, beta, false
+            );
+            
+            if (step_accepted_opp) {
+                std::cout << " -> step_size = " << step_size_opp << ", new_loss = " << new_loss_opp << " (opposite direction)" << std::endl;
+                prev_loss = new_loss_opp;
+            } else {
+                std::cout << " -> Line search in opposite direction also failed, restoring" << std::endl;
+                vertices_sphere = vertices_backup;
+                break; // No progress possible
+            }
         }
     }
 }
