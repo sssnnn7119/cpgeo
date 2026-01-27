@@ -17,12 +17,17 @@ if __name__ == "__main__":
     # faces = data['mesh_elements']
 
 
-    surf = cpgeo.CPGEO.load('tests/Surface-1_iter-4.npz')
+    surf = cpgeo.CPGEO.load('tests/Surface-1_iter-9.npz')
+
+    surf.show()
+
+    np.savetxt('src/cpp/tests/control_points.txt', surf.control_points, delimiter=',')
+    np.savetxt('src/cpp/tests/knots.txt', surf._knots, delimiter=',')
 
     surf.initialize()
 
     surf.refine_surface(seed_size=1.0, max_iterations=5)
 
-    surf.show()
+    surf.show_control_points()
 
     assert False

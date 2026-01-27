@@ -316,8 +316,8 @@ class CPGEO:
         num_points = ref_points.shape[0]
 
         x = np.zeros([num_points, 2])
-        x[:, 0] = 2 * ref_points[:, 0] / (1 - ref_points[:, 2])
-        x[:, 1] = 2 * ref_points[:, 1] / (1 - ref_points[:, 2])
+        x[:, 0] = 2 * ref_points[:, 0] / (1 - ref_points[:, 2] + 1e-15)
+        x[:, 1] = 2 * ref_points[:, 1] / (1 - ref_points[:, 2] + 1e-15)
 
         ind_inf = np.where(ref_points[:, 2] == 1)[0]
         x[ind_inf, 0] = 0

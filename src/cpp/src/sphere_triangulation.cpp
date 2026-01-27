@@ -1,5 +1,6 @@
 #include "sphere_triangulation.h"
 #include "triangulation.h"
+#include "mesh_edge_flip.h"
 #include <cmath>
 #include <algorithm>
 #include <unordered_map>
@@ -114,181 +115,34 @@ void SphereTriangulation::filterLowQualityTriangles(double quality_threshold) {
 }
 
 void SphereTriangulation::improveQualityByEdgeFlipping(int excluded_point_idx, double region_radius, int max_iterations) {
-    // std::cout << "Improving mesh quality by edge flipping (near excluded point)..." << std::endl;
-    
-    // Get excluded point coordinates
-    double ex = sphere_points[excluded_point_idx * 3];
-    double ey = sphere_points[excluded_point_idx * 3 + 1];
-    double ez = sphere_points[excluded_point_idx * 3 + 2];
-    
-    // Mark triangles in the region to optimize (near excluded point)
-    std::vector<bool> in_region(triangles.size(), false);
-    int region_tri_count = 0;
-    
+    // Convert triangles to flat array for mesh_optimize_by_edge_flipping
+    std::vector<int> faces_flat(triangles.size() * 3);
     for (size_t i = 0; i < triangles.size(); ++i) {
-        const auto& tri = triangles[i];
-        
-        // Check if any vertex is close to the excluded point
-        for (int v : tri) {
-            double vx = sphere_points[v * 3];
-            double vy = sphere_points[v * 3 + 1];
-            double vz = sphere_points[v * 3 + 2];
-            
-            // Calculate dot product (cosine of angle between points on unit sphere)
-            double dot = ex * vx + ey * vy + ez * vz;
-            
-            // If dot > cos(region_radius), the point is within the region
-            if (dot > std::cos(region_radius)) {
-                in_region[i] = true;
-                region_tri_count++;
-                break;
-            }
-        }
+        faces_flat[i * 3] = triangles[i][0];
+        faces_flat[i * 3 + 1] = triangles[i][1];
+        faces_flat[i * 3 + 2] = triangles[i][2];
     }
     
-    // std::cout << "  Region contains " << region_tri_count << " triangles ("
-    //           << (100.0 * region_tri_count / triangles.size()) << "% of mesh)" << std::endl;
+    // Convert sphere_points span to vector for passing to mesh_optimize_by_edge_flipping
+    std::vector<double> vertices(sphere_points.begin(), sphere_points.end());
     
-    for (int iter = 0; iter < max_iterations; ++iter) {
-        int flips = 0;
-        
-        // Build edge-to-triangles map (only for region triangles and their neighbors)
-        std::unordered_map<std::pair<int, int>, std::vector<size_t>, EdgeHash> edge_to_tris;
-        
-        for (size_t i = 0; i < triangles.size(); ++i) {
-            const auto& tri = triangles[i];
-            for (int j = 0; j < 3; ++j) {
-                int a = tri[j];
-                int b = tri[(j + 1) % 3];
-                auto edge = (a < b) ? std::make_pair(a, b) : std::make_pair(b, a);
-                edge_to_tris[edge].push_back(i);
-            }
-        }
-        
-        // Try to flip each internal edge (only if at least one adjacent triangle is in region)
-        std::vector<bool> processed(triangles.size(), false);
-        
-        for (const auto& [edge, tri_indices] : edge_to_tris) {
-            if (tri_indices.size() != 2) continue;  // Only flip internal edges
-            
-            size_t tri1_idx = tri_indices[0];
-            size_t tri2_idx = tri_indices[1];
-            
-            // Skip if neither triangle is in the optimization region
-            if (!in_region[tri1_idx] && !in_region[tri2_idx]) continue;
-            
-            if (processed[tri1_idx] || processed[tri2_idx]) continue;
-            
-            const auto& tri1 = triangles[tri1_idx];
-            const auto& tri2 = triangles[tri2_idx];
-            
-            // Find the four vertices of the quadrilateral
-            int shared_a = edge.first;
-            int shared_b = edge.second;
-            int opposite1 = -1, opposite2 = -1;
-            
-            for (int v : tri1) {
-                if (v != shared_a && v != shared_b) {
-                    opposite1 = v;
-                    break;
-                }
-            }
-            
-            for (int v : tri2) {
-                if (v != shared_a && v != shared_b) {
-                    opposite2 = v;
-                    break;
-                }
-            }
-            
-            if (opposite1 == -1 || opposite2 == -1) continue;
-            
-            // Calculate quality before flip
-            double q1_before = calculateTriangleQuality(tri1);
-            double q2_before = calculateTriangleQuality(tri2);
-            double min_quality_before = std::min(q1_before, q2_before);
-            
-            // Create new triangles after flip
-            Triangle new_tri1 = {opposite1, opposite2, shared_a};
-            Triangle new_tri2 = {opposite1, opposite2, shared_b};
-            
-            // Check if the new edge already exists (would create non-manifold edge)
-            auto new_edge = (opposite1 < opposite2) ? std::make_pair(opposite1, opposite2) : std::make_pair(opposite2, opposite1);
-            if (edge_to_tris.count(new_edge) > 0) {
-                continue;  // Skip this flip to avoid non-manifold edge
-            }
-            
-            // Calculate quality after flip
-            double q1_after = calculateTriangleQuality(new_tri1);
-            double q2_after = calculateTriangleQuality(new_tri2);
-            double min_quality_after = std::min(q1_after, q2_after);
-            
-            // Flip if quality improves
-            if (min_quality_after > min_quality_before * 1.05) {  // 5% improvement threshold
-                // Ensure correct orientation for new triangles
-                double x0 = sphere_points[new_tri1[0] * 3];
-                double y0 = sphere_points[new_tri1[0] * 3 + 1];
-                double z0 = sphere_points[new_tri1[0] * 3 + 2];
-                
-                double x1 = sphere_points[new_tri1[1] * 3];
-                double y1 = sphere_points[new_tri1[1] * 3 + 1];
-                double z1 = sphere_points[new_tri1[1] * 3 + 2];
-                
-                double x2 = sphere_points[new_tri1[2] * 3];
-                double y2 = sphere_points[new_tri1[2] * 3 + 1];
-                double z2 = sphere_points[new_tri1[2] * 3 + 2];
-                
-                double cx = (x0 + x1 + x2) / 3.0;
-                double cy = (y0 + y1 + y2) / 3.0;
-                double cz = (z0 + z1 + z2) / 3.0;
-                
-                double nx = (y1 - y0) * (z2 - z0) - (z1 - z0) * (y2 - y0);
-                double ny = (z1 - z0) * (x2 - x0) - (x1 - x0) * (z2 - z0);
-                double nz = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
-                
-                if (nx * cx + ny * cy + nz * cz < 0) {
-                    std::swap(new_tri1[1], new_tri1[2]);
-                }
-                
-                x0 = sphere_points[new_tri2[0] * 3];
-                y0 = sphere_points[new_tri2[0] * 3 + 1];
-                z0 = sphere_points[new_tri2[0] * 3 + 2];
-                
-                x1 = sphere_points[new_tri2[1] * 3];
-                y1 = sphere_points[new_tri2[1] * 3 + 1];
-                z1 = sphere_points[new_tri2[1] * 3 + 2];
-                
-                x2 = sphere_points[new_tri2[2] * 3];
-                y2 = sphere_points[new_tri2[2] * 3 + 1];
-                z2 = sphere_points[new_tri2[2] * 3 + 2];
-                
-                cx = (x0 + x1 + x2) / 3.0;
-                cy = (y0 + y1 + y2) / 3.0;
-                cz = (z0 + z1 + z2) / 3.0;
-                
-                nx = (y1 - y0) * (z2 - z0) - (z1 - z0) * (y2 - y0);
-                ny = (z1 - z0) * (x2 - x0) - (x1 - x0) * (z2 - z0);
-                nz = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
-                
-                if (nx * cx + ny * cy + nz * cz < 0) {
-                    std::swap(new_tri2[1], new_tri2[2]);
-                }
-                
-                // Apply the flip
-                triangles[tri1_idx] = new_tri1;
-                triangles[tri2_idx] = new_tri2;
-                processed[tri1_idx] = true;
-                processed[tri2_idx] = true;
-                flips++;
-            }
-        }
-        
-        // std::cout << "  Iteration " << (iter + 1) << ": " << flips << " edges flipped" << std::endl;
-        
-        if (flips == 0) {
-        // std::cout << "  Converged after " << (iter + 1) << " iterations" << std::endl;
-            break;
-        }
+    // Call the tested mesh edge flipping function
+    auto optimized_faces = mesh_optimize_by_edge_flipping(
+        std::span<const double>(vertices.data(), vertices.size()),
+        3,  // vertices_dim = 3 for sphere points
+        std::span<const int>(faces_flat.data(), faces_flat.size()),
+        max_iterations
+    );
+    
+    // Convert back to Triangle array
+    triangles.clear();
+    triangles.reserve(optimized_faces.size() / 3);
+    for (size_t i = 0; i < optimized_faces.size() / 3; ++i) {
+        Triangle tri;
+        tri[0] = optimized_faces[i * 3];
+        tri[1] = optimized_faces[i * 3 + 1];
+        tri[2] = optimized_faces[i * 3 + 2];
+        triangles.push_back(tri);
     }
 }
 

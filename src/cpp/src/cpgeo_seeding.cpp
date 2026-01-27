@@ -1,6 +1,7 @@
 #include "cpgeo_seeding.h"
 #include <algorithm>
 #include <iostream>
+#include <fstream>
 #include <cmath>
 #include <omp.h>
 
@@ -66,6 +67,9 @@ static std::vector<int> insert_delete_points(
         faces.clear();
         faces.resize(triangulator.size() * 3);
         triangulator.getTriangleIndices(faces);
+        triangulator.exportToObj("Z:/temp/test_%d.obj");
+        std::string filename = "Z:/temp/test_" + std::to_string(iter_count) + ".obj";
+        triangulator.exportToObj(filename.c_str());
 
         if (faces.empty()) {
             break;
@@ -210,7 +214,8 @@ static std::vector<int> insert_delete_points(
                 double norm = std::sqrt(new_point[0]*new_point[0] + new_point[1]*new_point[1] + new_point[2]*new_point[2]);
                 if (norm > 0) { new_point[0] /= norm; new_point[1] /= norm; new_point[2] /= norm; }
 
-                // write midpoint to a, erase b
+				triangulator.exportToObj("Z:/temp/before_edge_merge.obj");
+
                 vertices_sphere[a*3 + 0] = new_point[0];
                 vertices_sphere[a*3 + 1] = new_point[1];
                 vertices_sphere[a*3 + 2] = new_point[2];
@@ -758,7 +763,7 @@ void vertice_smoothing(
 	auto knots = tree.get_knots();
 	auto thresholds = tree.get_thresholds();
 
-    const int max_newton_iters = 20;
+    const int max_newton_iters = 100000;
     const double loss_tol = 1e-6;
     const double grad_tol = 1e-3;
     
@@ -844,32 +849,33 @@ std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
 
     std::vector<double> vertices_sphere(init_vertices_sphere.begin(), init_vertices_sphere.end());
 
-    std::vector<int> faces;
-    SphereTriangulation triangulator(vertices_sphere);
-    triangulator.triangulate();
-    faces.clear();
-    faces.resize(triangulator.size() * 3);
-    triangulator.getTriangleIndices(faces);
+    // insert/delete points
+    auto faces = insert_delete_points(vertices_sphere, control_points, tree, seed_size);
+
 
     for(int loop=0;loop<max_iterations;loop++){
         std::cout << "  - Mesh uniforming loop " << loop + 1 << "/" << max_iterations << std::endl;
 
-        // refine mesh by edge flipping
-        faces = mesh_optimize_by_edge_flipping(vertices_sphere, 3, faces, 100);
 
-        // insert/delete points
-        auto faces_new = insert_delete_points(vertices_sphere, control_points, tree, seed_size);
-
-        if (faces_new.size() == faces.size()) {
-            std::cout << "    No more insertions/deletions, stopping." << std::endl;
-            break;
-        } else {
-            faces = faces_new;
-            std::cout << "    Updated mesh: " << vertices_sphere.size() / 3 << " vertices, " << faces.size() / 3 << " faces." << std::endl;
-		}
 
         // refine mesh by vertex smoothing
         vertice_smoothing(vertices_sphere, faces, control_points, tree);
+
+        // refine mesh by edge flipping
+        auto faces_new = mesh_optimize_by_edge_flipping(vertices_sphere, 3, faces, 100);
+
+        bool any_change = false;
+        for (int i = 0; i < static_cast<int>(faces.size()); i++) {
+            if (faces[i] != faces_new[i]) {
+                any_change = true;
+                break;
+            }
+        }
+        if (!any_change) {
+            std::cout << "    No edge flipping changes, stopping early." << std::endl;
+            break;
+        }
+        faces = faces_new;
 
 
     }

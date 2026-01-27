@@ -2,6 +2,8 @@
 #include <vector>
 #include <cmath>
 #include <unordered_map>
+#include <map>
+#include <set>
 #include <array>
 #include <chrono>
 #include <algorithm>
@@ -17,6 +19,31 @@
 #include <string>
 
 const double M_PI = 3.14159265358979323846;
+
+static bool read_points_from_file(const std::string& path, std::vector<double>& out_points) {
+    std::ifstream ifs(path);
+    if (!ifs.is_open()) return false;
+    out_points.clear();
+    std::string line;
+    while (std::getline(ifs, line)) {
+        if (line.empty()) continue;
+        std::stringstream ss(line);
+        double x, y, z;
+        char comma;
+        // Expect format: x,y,z
+        if (!(ss >> x)) continue;
+        if (!(ss >> comma)) continue;
+        if (!(ss >> y)) continue;
+        if (!(ss >> comma)) continue;
+        if (!(ss >> z)) continue;
+        out_points.push_back(x);
+        out_points.push_back(y);
+        out_points.push_back(z);
+    }
+    return !out_points.empty();
+}
+
+
 
 namespace TestWeight{
     bool test_weight_function(){
@@ -691,6 +718,168 @@ namespace TestTriangulationPlain {
         return is_closed_manifold;
     }
     
+    // 检查是否存在病态的几何配置（如4个点构成超过2个三角形）
+    bool checkNonManifoldConfigurations(const std::vector<std::array<int, 3>>& triangles, 
+                                         const double* vertices, int num_vertices) {
+        // 建立4点组合到三角形的映射
+        std::map<std::set<int>, std::set<int>> quad_to_triangles;
+        
+        for (size_t i = 0; i < triangles.size(); ++i) {
+            const auto& tri = triangles[i];
+            std::vector<int> verts = {tri[0], tri[1], tri[2]};
+            std::sort(verts.begin(), verts.end());
+            
+            // 检查这个三角形的所有邻近三角形，看是否能形成4点配置
+            for (size_t j = i + 1; j < triangles.size(); ++j) {
+                const auto& tri2 = triangles[j];
+                std::set<int> combined;
+                combined.insert(tri[0]); combined.insert(tri[1]); combined.insert(tri[2]);
+                combined.insert(tri2[0]); combined.insert(tri2[1]); combined.insert(tri2[2]);
+                
+                // 如果两个三角形共享2个点（即共享一条边），则组合为4个点
+                if (combined.size() == 4) {
+                    quad_to_triangles[combined].insert(i);
+                    quad_to_triangles[combined].insert(j);
+                }
+            }
+        }
+        
+        std::cout << "Non-manifold configuration check:" << std::endl;
+        int bad_configs = 0;
+        
+        for (const auto& [quad, tris] : quad_to_triangles) {
+            if (tris.size() > 2) {
+                bad_configs++;
+                if (bad_configs <= 5) {  // 只打印前5个
+                    std::cout << "  BAD: " << tris.size() << " triangles formed by 4 points: ";
+                    for (int v : quad) std::cout << v << " ";
+                    std::cout << "\n    Triangle indices: ";
+                    for (int t : tris) {
+                        std::cout << t << " [" << triangles[t][0] << "," << triangles[t][1] << "," << triangles[t][2] << "] ";
+                    }
+                    std::cout << std::endl;
+                }
+            }
+        }
+        
+        bool is_good = (bad_configs == 0);
+        if (is_good) {
+            std::cout << "  ✓ No bad 4-point configurations found" << std::endl;
+        } else {
+            std::cout << "  ✗ Found " << bad_configs << " bad 4-point configurations" << std::endl;
+        }
+        
+        return is_good;
+    }
+    
+    // 检查相邻三角形的法向量一致性
+    bool checkAdjacentTriangleNormals(const std::vector<std::array<int, 3>>& triangles, 
+                                       const double* vertices, int num_vertices) {
+        // 建立边到三角形的映射，使用有向边
+        // key: (v1, v2) 有向边，value: 包含该边的三角形索引
+        std::unordered_map<uint64_t, std::vector<std::pair<int, bool>>> edge_to_triangles;
+        
+        auto make_directed_edge_key = [](int v1, int v2) -> uint64_t {
+            return (static_cast<uint64_t>(v1) << 32) | static_cast<uint64_t>(v2);
+        };
+        
+        // 遍历所有三角形，记录每条有向边
+        for (size_t i = 0; i < triangles.size(); ++i) {
+            const auto& tri = triangles[i];
+            // 记录三条有向边
+            edge_to_triangles[make_directed_edge_key(tri[0], tri[1])].push_back({i, true});
+            edge_to_triangles[make_directed_edge_key(tri[1], tri[2])].push_back({i, true});
+            edge_to_triangles[make_directed_edge_key(tri[2], tri[0])].push_back({i, true});
+        }
+        
+        int inconsistent_edges = 0;
+        int checked_edges = 0;
+        
+        // 检查每条边的相邻三角形
+        for (size_t i = 0; i < triangles.size(); ++i) {
+            const auto& tri = triangles[i];
+            
+            // 检查三条边
+            for (int e = 0; e < 3; ++e) {
+                int v1 = tri[e];
+                int v2 = tri[(e + 1) % 3];
+                
+                // 查找反向边
+                uint64_t reverse_edge = make_directed_edge_key(v2, v1);
+                auto it = edge_to_triangles.find(reverse_edge);
+                
+                if (it != edge_to_triangles.end() && !it->second.empty()) {
+                    // 找到了相邻三角形
+                    int neighbor_tri_idx = it->second[0].first;
+                    
+                    // 只检查一次（避免重复）
+                    if (neighbor_tri_idx > static_cast<int>(i)) {
+                        checked_edges++;
+                        
+                        // 计算两个三角形的法向量
+                        const auto& tri1 = triangles[i];
+                        const auto& tri2 = triangles[neighbor_tri_idx];
+                        
+                        // 三角形1的法向量
+                        double v0_1[3] = {vertices[tri1[0] * 3], vertices[tri1[0] * 3 + 1], vertices[tri1[0] * 3 + 2]};
+                        double v1_1[3] = {vertices[tri1[1] * 3], vertices[tri1[1] * 3 + 1], vertices[tri1[1] * 3 + 2]};
+                        double v2_1[3] = {vertices[tri1[2] * 3], vertices[tri1[2] * 3 + 1], vertices[tri1[2] * 3 + 2]};
+                        
+                        double edge1_1[3] = {v1_1[0] - v0_1[0], v1_1[1] - v0_1[1], v1_1[2] - v0_1[2]};
+                        double edge2_1[3] = {v2_1[0] - v0_1[0], v2_1[1] - v0_1[1], v2_1[2] - v0_1[2]};
+                        
+                        double normal1[3] = {
+                            edge1_1[1] * edge2_1[2] - edge1_1[2] * edge2_1[1],
+                            edge1_1[2] * edge2_1[0] - edge1_1[0] * edge2_1[2],
+                            edge1_1[0] * edge2_1[1] - edge1_1[1] * edge2_1[0]
+                        };
+                        
+                        // 三角形2的法向量
+                        double v0_2[3] = {vertices[tri2[0] * 3], vertices[tri2[0] * 3 + 1], vertices[tri2[0] * 3 + 2]};
+                        double v1_2[3] = {vertices[tri2[1] * 3], vertices[tri2[1] * 3 + 1], vertices[tri2[1] * 3 + 2]};
+                        double v2_2[3] = {vertices[tri2[2] * 3], vertices[tri2[2] * 3 + 1], vertices[tri2[2] * 3 + 2]};
+                        
+                        double edge1_2[3] = {v1_2[0] - v0_2[0], v1_2[1] - v0_2[1], v1_2[2] - v0_2[2]};
+                        double edge2_2[3] = {v2_2[0] - v0_2[0], v2_2[1] - v0_2[1], v2_2[2] - v0_2[2]};
+                        
+                        double normal2[3] = {
+                            edge1_2[1] * edge2_2[2] - edge1_2[2] * edge2_2[1],
+                            edge1_2[2] * edge2_2[0] - edge1_2[0] * edge2_2[2],
+                            edge1_2[0] * edge2_2[1] - edge1_2[1] * edge2_2[0]
+                        };
+                        
+                        // 计算法向量的点积
+                        double dot = normal1[0] * normal2[0] + normal1[1] * normal2[1] + normal1[2] * normal2[2];
+                        
+                        // 如果点积为负，说明法向量指向相反
+                        if (dot < 0) {
+                            inconsistent_edges++;
+                            if (inconsistent_edges <= 10) {  // 只打印前10个
+                                std::cout << "  INCONSISTENT edge (" << v1 << ", " << v2 << "): "
+                                          << "Triangle " << i << " [" << tri1[0] << ", " << tri1[1] << ", " << tri1[2] << "] "
+                                          << "vs Triangle " << neighbor_tri_idx << " [" << tri2[0] << ", " << tri2[1] << ", " << tri2[2] << "]"
+                                          << " (dot=" << dot << ")" << std::endl;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        std::cout << "Adjacent triangle normal consistency check:" << std::endl;
+        std::cout << "  Total shared edges checked: " << checked_edges << std::endl;
+        std::cout << "  Inconsistent edges (opposite normals): " << inconsistent_edges << std::endl;
+        
+        bool all_consistent = (inconsistent_edges == 0);
+        if (all_consistent) {
+            std::cout << "  ✓ All adjacent triangles have CONSISTENT normals" << std::endl;
+        } else {
+            std::cout << "  ✗ Found " << inconsistent_edges << " edges with INCONSISTENT normals" << std::endl;
+        }
+        
+        return all_consistent;
+    }
+    
     bool test_sphere_simple() {
         
         
@@ -773,6 +962,7 @@ namespace TestTriangulationPlain {
         
         return passed;
     }
+    
     void test_mesh(){
     std::cout << "========================================" << std::endl;
     std::cout << "CPGEO Delaunay Triangulation Test Suite" << std::endl;
@@ -819,6 +1009,76 @@ namespace TestTriangulationPlain {
     std::cout << "Test Results: " << passed << "/" << total << " passed" << std::endl;
     std::cout << "========================================" << std::endl;
 }
+
+    bool test_sphere() {
+
+        std::vector<double> knots;
+
+        knots.reserve(100000);
+
+        // Prefer explicit filenames
+        bool ok1 = read_points_from_file("A:/MineData/Learning/Code/Projects/Modules/CPGEO/src/cpp/tests/pointsspheremesh.txt", knots);
+
+        int num_points = static_cast<int>(knots.size() / 3);
+
+        std::cout << "=== Test 5: Sphere Triangulation (" << num_points << " points) ===" << std::endl;
+
+        int num_triangles = 0;
+        cpgeo_handle_t handle = sphere_triangulation_compute(knots.data(), num_points, &num_triangles);
+        if (!handle) {
+            std::cout << "ERROR: Sphere triangulation compute failed" << std::endl;
+            return false;
+        }
+
+        auto* tri = static_cast<cpgeo::SphereTriangulation*> (handle);
+
+        tri->exportToObj("Z:/temp/sphere.obj");
+
+        std::vector<int> triangle_indices(num_triangles * 3);
+        int result = sphere_triangulation_get_data(handle, triangle_indices.data());
+        if (result != 0) {
+            std::cout << "ERROR: Sphere triangulation get data failed with code " << result << std::endl;
+            return false;
+        }
+
+        // std::cout << "Number of triangles: " << num_triangles << std::endl;
+
+        // 转换为 vector<array<int,3>> 格式
+        std::vector<std::array<int, 3>> triangles_vec;
+        triangles_vec.reserve(num_triangles);
+        for (int i = 0; i < num_triangles; ++i) {
+            triangles_vec.push_back({
+                triangle_indices[i * 3],
+                triangle_indices[i * 3 + 1],
+                triangle_indices[i * 3 + 2]
+                });
+        }
+
+        // 检查法向量方向
+        bool normals_ok = checkNormalOrientation(triangles_vec, knots.data(), num_points);
+
+        // 检查边拓扑
+        bool topology_ok = checkEdgeTopology(triangles_vec, num_points);
+
+        // 检查病态几何配置
+        bool config_ok = checkNonManifoldConfigurations(triangles_vec, knots.data(), num_points);
+
+        // 检查相邻三角形法向量一致性
+        bool consistency_ok = checkAdjacentTriangleNormals(triangles_vec, knots.data(), num_points);
+
+        bool passed = (num_triangles > 0) && topology_ok && normals_ok && config_ok && consistency_ok;
+        std::cout << (passed ? "PASSED" : "FAILED") << std::endl << std::endl;
+
+        if (num_triangles > 0) {
+            // sphere_tri.exportToObj("test5_sphere.obj");
+        }
+
+
+
+        return passed;
+    }
+
+
 }
 
 namespace TestEdgeRefinement{
@@ -847,28 +1107,6 @@ namespace TestEdgeRefinement{
 
 namespace TestRefineMesh{
 
-    static bool read_points_from_file(const std::string &path, std::vector<double> &out_points) {
-        std::ifstream ifs(path);
-        if (!ifs.is_open()) return false;
-        out_points.clear();
-        std::string line;
-        while (std::getline(ifs, line)) {
-            if (line.empty()) continue;
-            std::stringstream ss(line);
-            double x, y, z;
-            char comma;
-            // Expect format: x,y,z
-            if (!(ss >> x)) continue;
-            if (!(ss >> comma)) continue;
-            if (!(ss >> y)) continue;
-            if (!(ss >> comma)) continue;
-            if (!(ss >> z)) continue;
-            out_points.push_back(x);
-            out_points.push_back(y);
-            out_points.push_back(z);
-        }
-        return !out_points.empty();
-    }
 
     bool test_remesh_build_spacetree() {
         std::cout << "=== Test Remesh: Load knots & controlpoints and build SpaceTree ===" << std::endl;
@@ -993,8 +1231,8 @@ int main() {
     // TestTriangulationPlain::test_mesh();
      //TestWeight::test_weight_function();   
      //TestEdgeRefinement::test_refinement(); 
-    TestRefineMesh::test_remesh_build_spacetree();
-
+     TestRefineMesh::test_remesh_build_spacetree();
+    //TestTriangulationPlain::test_sphere();
 
     return 0;
 }

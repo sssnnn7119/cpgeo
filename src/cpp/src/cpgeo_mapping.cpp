@@ -97,11 +97,11 @@ inline static std::tuple<double, std::array<double, 3>, Tensor2D> weightFunction
 inline std::array<double, 2> stereographicProjection3_2(const std::span<const double, 3> cooSphere, bool north_pole) {
 	std::array<double, 2> cooPlane;
 	if (north_pole) {
-		cooPlane[0] = 2 * cooSphere[0] / (1 - cooSphere[2]);
-		cooPlane[1] = 2 * cooSphere[1] / (1 - cooSphere[2]);
+		cooPlane[0] = 2 * cooSphere[0] / (1 - cooSphere[2] + 1e-15);
+		cooPlane[1] = 2 * cooSphere[1] / (1 - cooSphere[2] + 1e-15);
 	} else {
-		cooPlane[0] = 2 * cooSphere[0] / (1 + cooSphere[2]);
-		cooPlane[1] = 2 * cooSphere[1] / (1 + cooSphere[2]);
+		cooPlane[0] = 2 * cooSphere[0] / (1 + cooSphere[2] + 1e-15);
+		cooPlane[1] = 2 * cooSphere[1] / (1 + cooSphere[2] + 1e-15);
 	}
     return cooPlane;
 }
