@@ -342,6 +342,7 @@ def get_sphere_triangulation(sphere_points: np.ndarray) -> np.ndarray:
     Returns:
         np.ndarray: Triangle indices array (shape: [num_triangles, 3])
     """
+    sphere_points = sphere_points.flatten()
     if sphere_points.ndim != 1 or len(sphere_points) % 3 != 0:
         raise ValueError("sphere_points must be a 1D array with length multiple of 3")
     

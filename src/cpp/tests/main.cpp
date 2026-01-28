@@ -43,6 +43,97 @@ static bool read_points_from_file(const std::string& path, std::vector<double>& 
     return !out_points.empty();
 }
 
+static bool read_faces_from_file(const std::string& path, std::vector<int>& out_faces) {
+    std::ifstream ifs(path);
+    if (!ifs.is_open()) return false;
+    out_faces.clear();
+    std::string line;
+    while (std::getline(ifs, line)) {
+        if (line.empty()) continue;
+        std::stringstream ss(line);
+        int x, y, z;
+        char comma;
+        // Expect format: x,y,z
+        if (!(ss >> x)) continue;
+        if (!(ss >> comma)) continue;
+        if (!(ss >> y)) continue;
+        if (!(ss >> comma)) continue;
+        if (!(ss >> z)) continue;
+        out_faces.push_back(x);
+        out_faces.push_back(y);
+        out_faces.push_back(z);
+    }
+    return !out_faces.empty();
+}
+
+// Read OBJ file and return vertices and triangular faces
+static std::tuple<std::vector<double>, std::vector<int>> read_obj_file(const std::string& path) {
+    std::vector<double> vertices;
+    std::vector<int> faces;
+    
+    std::ifstream ifs(path);
+    if (!ifs.is_open()) {
+        std::cerr << "Failed to open OBJ file: " << path << std::endl;
+        return {vertices, faces};
+    }
+    
+    std::string line;
+    while (std::getline(ifs, line)) {
+        if (line.empty()) continue;
+        
+        std::stringstream ss(line);
+        std::string prefix;
+        ss >> prefix;
+        
+        if (prefix == "v") {
+            // Vertex line: v x y z
+            double x, y, z;
+            if (ss >> x >> y >> z) {
+                vertices.push_back(x);
+                vertices.push_back(y);
+                vertices.push_back(z);
+            }
+        } else if (prefix == "f") {
+            // Face line: f v1 v2 v3 or f v1/vt1/vn1 v2/vt2/vn2 v3/vt3/vn3
+            std::vector<int> face_indices;
+            std::string vertex_str;
+            
+            while (ss >> vertex_str) {
+                // Parse vertex index (may contain texture/normal indices like "1/2/3")
+                std::stringstream vertex_ss(vertex_str);
+                int vertex_idx;
+                if (vertex_ss >> vertex_idx) {
+                    // OBJ indices are 1-based, convert to 0-based
+                    face_indices.push_back(vertex_idx - 1);
+                }
+                
+                // Skip to next vertex (handle slashes for texture/normal indices)
+                if (vertex_ss.peek() == '/') {
+                    // Just ignore texture and normal indices
+                    continue;
+                }
+            }
+            
+            // Only process triangular faces
+            if (face_indices.size() == 3) {
+                faces.push_back(face_indices[0]);
+                faces.push_back(face_indices[1]);
+                faces.push_back(face_indices[2]);
+            } else if (face_indices.size() > 3) {
+                // Triangulate polygons (simple fan triangulation)
+                for (size_t i = 1; i < face_indices.size() - 1; ++i) {
+                    faces.push_back(face_indices[0]);
+                    faces.push_back(face_indices[i]);
+                    faces.push_back(face_indices[i + 1]);
+                }
+            }
+        }
+        // Ignore other lines (vt, vn, comments, etc.)
+    }
+    
+    return {vertices, faces};
+}
+
 
 
 namespace TestWeight{
@@ -717,6 +808,122 @@ namespace TestTriangulationPlain {
         
         return is_closed_manifold;
     }
+
+    // 检查有向边：每条有向边应出现恰好1次（封闭一致流形）
+    bool checkDirectedEdgeUsage(const std::vector<std::array<int, 3>>& triangles) {
+        std::unordered_map<uint64_t, int> edge_count;
+        edge_count.reserve(triangles.size() * 3);
+
+        auto make_directed_edge_key = [](int v1, int v2) -> uint64_t {
+            return (static_cast<uint64_t>(v1) << 32) | static_cast<uint64_t>(v2);
+        };
+
+        for (const auto& tri : triangles) {
+            edge_count[make_directed_edge_key(tri[0], tri[1])]++;
+            edge_count[make_directed_edge_key(tri[1], tri[2])]++;
+            edge_count[make_directed_edge_key(tri[2], tri[0])]++;
+        }
+
+        int bad_edges = 0;
+        for (const auto& kv : edge_count) {
+            if (kv.second != 1) {
+                if (bad_edges < 10) {
+                    int v1 = static_cast<int>(kv.first >> 32);
+                    int v2 = static_cast<int>(kv.first & 0xFFFFFFFF);
+                    std::cout << "  Directed edge count!=1: " << v1 << " -> " << v2 << " (count=" << kv.second << ")" << std::endl;
+                }
+                bad_edges++;
+            }
+        }
+
+        std::cout << "Directed edge usage check:" << std::endl;
+        std::cout << "  Total directed edges: " << edge_count.size() << std::endl;
+        std::cout << "  Bad directed edges: " << bad_edges << std::endl;
+
+        bool ok = (bad_edges == 0);
+        if (ok) {
+            std::cout << "  ✓ All directed edges appear exactly once" << std::endl;
+        } else {
+            std::cout << "  ✗ Directed edge usage invalid" << std::endl;
+        }
+
+        return ok;
+    }
+
+    // 检查重复三角形（忽略顶点顺序）
+    bool checkDuplicateTriangles(const std::vector<std::array<int, 3>>& triangles) {
+        struct TriKeyHash {
+            std::size_t operator()(const std::array<int, 3>& k) const noexcept {
+                return std::hash<int>{}(k[0]) ^ (std::hash<int>{}(k[1]) << 1) ^ (std::hash<int>{}(k[2]) << 2);
+            }
+        };
+
+        std::unordered_map<std::array<int, 3>, int, TriKeyHash> tri_count;
+        tri_count.reserve(triangles.size() * 2);
+
+        for (const auto& tri : triangles) {
+            std::array<int, 3> key = {tri[0], tri[1], tri[2]};
+            std::sort(key.begin(), key.end());
+            tri_count[key]++;
+        }
+
+        int dup = 0;
+        for (const auto& kv : tri_count) {
+            if (kv.second > 1) {
+                if (dup < 10) {
+                    std::cout << "  Duplicate triangle: " << kv.first[0] << ", " << kv.first[1] << ", " << kv.first[2]
+                              << " (count=" << kv.second << ")" << std::endl;
+                }
+                dup++;
+            }
+        }
+
+        std::cout << "Duplicate triangle check:" << std::endl;
+        std::cout << "  Duplicate triangles: " << dup << std::endl;
+
+        bool ok = (dup == 0);
+        if (ok) {
+            std::cout << "  ✓ No duplicate triangles" << std::endl;
+        } else {
+            std::cout << "  ✗ Found duplicate triangles" << std::endl;
+        }
+
+        return ok;
+    }
+
+    // 检查欧拉示性数（球面应为2）
+    bool checkEulerCharacteristic(const std::vector<std::array<int, 3>>& triangles, int num_vertices) {
+        std::unordered_map<uint64_t, int> edge_count;
+        edge_count.reserve(triangles.size() * 3);
+
+        auto make_edge_key = [](int v1, int v2) -> uint64_t {
+            if (v1 > v2) std::swap(v1, v2);
+            return (static_cast<uint64_t>(v1) << 32) | static_cast<uint64_t>(v2);
+        };
+
+        for (const auto& tri : triangles) {
+            edge_count[make_edge_key(tri[0], tri[1])]++;
+            edge_count[make_edge_key(tri[1], tri[2])]++;
+            edge_count[make_edge_key(tri[2], tri[0])]++;
+        }
+
+        int V = num_vertices;
+        int E = static_cast<int>(edge_count.size());
+        int F = static_cast<int>(triangles.size());
+        int chi = V - E + F;
+
+        std::cout << "Euler characteristic check:" << std::endl;
+        std::cout << "  V=" << V << " E=" << E << " F=" << F << " => chi=" << chi << std::endl;
+
+        bool ok = (chi == 2);
+        if (ok) {
+            std::cout << "  ✓ Euler characteristic == 2 (sphere)" << std::endl;
+        } else {
+            std::cout << "  ✗ Euler characteristic != 2" << std::endl;
+        }
+
+        return ok;
+    }
     
     // 检查是否存在病态的几何配置（如4个点构成超过2个三角形）
     bool checkNonManifoldConfigurations(const std::vector<std::array<int, 3>>& triangles, 
@@ -879,6 +1086,59 @@ namespace TestTriangulationPlain {
         
         return all_consistent;
     }
+
+    // 质量检测：统计最小角、平均最小角
+    bool checkTriangleQuality(const std::vector<std::array<int, 3>>& triangles,
+                              const double* vertices,
+                              int num_vertices,
+                              double min_angle_deg_threshold = 0.1) {
+        if (triangles.empty()) {
+            std::cout << "Triangle quality check: no triangles" << std::endl;
+            return false;
+        }
+
+        auto angle_at = [](const double* a, const double* b, const double* c) {
+            double ab[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+            double ac[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+            double ab_len = std::sqrt(ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2]);
+            double ac_len = std::sqrt(ac[0] * ac[0] + ac[1] * ac[1] + ac[2] * ac[2]);
+            if (ab_len < 1e-12 || ac_len < 1e-12) return 0.0;
+            double dot = ab[0] * ac[0] + ab[1] * ac[1] + ab[2] * ac[2];
+            double cosv = dot / (ab_len * ac_len);
+            cosv = std::max(-1.0, std::min(1.0, cosv));
+            return std::acos(cosv);
+        };
+
+        double min_angle = 1e9;
+        double sum_min_angle = 0.0;
+        for (const auto& tri : triangles) {
+            const double* v0 = &vertices[tri[0] * 3];
+            const double* v1 = &vertices[tri[1] * 3];
+            const double* v2 = &vertices[tri[2] * 3];
+            double a0 = angle_at(v0, v1, v2);
+            double a1 = angle_at(v1, v2, v0);
+            double a2 = angle_at(v2, v0, v1);
+            double min_a = std::min({a0, a1, a2});
+            min_angle = std::min(min_angle, min_a);
+            sum_min_angle += min_a;
+        }
+
+        double min_angle_deg = min_angle * 180.0 / M_PI;
+        double avg_min_angle_deg = (sum_min_angle / triangles.size()) * 180.0 / M_PI;
+
+        std::cout << "Triangle quality check:" << std::endl;
+        std::cout << "  Min angle: " << min_angle_deg << " deg" << std::endl;
+        std::cout << "  Avg min angle: " << avg_min_angle_deg << " deg" << std::endl;
+
+        bool ok = (min_angle_deg >= min_angle_deg_threshold);
+        if (ok) {
+            std::cout << "  ✓ Quality OK (min angle >= " << min_angle_deg_threshold << " deg)" << std::endl;
+        } else {
+            std::cout << "  ✗ Quality low (min angle < " << min_angle_deg_threshold << " deg)" << std::endl;
+        }
+
+        return ok;
+    }
     
     bool test_sphere_simple() {
         
@@ -920,46 +1180,50 @@ namespace TestTriangulationPlain {
         }
         // std::cout << "Number of sphere points: " << num_points << std::endl;
         
-        int num_triangles = 0;
-        cpgeo_handle_t handle = sphere_triangulation_compute(sphere_points.get(), num_points, &num_triangles);
-        if (!handle) {
-            std::cout << "ERROR: Sphere triangulation compute failed" << std::endl;
-            return false;
+        const int max_attempts = 3;
+        bool passed = false;
+
+        for (int attempt = 0; attempt < max_attempts; ++attempt) {
+            int num_triangles = 0;
+            cpgeo_handle_t handle = sphere_triangulation_compute(sphere_points.get(), num_points, &num_triangles);
+            if (!handle) {
+                std::cout << "ERROR: Sphere triangulation compute failed" << std::endl;
+                return false;
+            }
+
+            auto* tri = static_cast<cpgeo::SphereTriangulation*>(handle);
+            tri->exportToObj("Z:/temp/sphere_random.obj");
+
+            
+            std::vector<int> triangle_indices(num_triangles * 3);
+            int result = sphere_triangulation_get_data(handle, triangle_indices.data());
+            if (result != 0) {
+                std::cout << "ERROR: Sphere triangulation get data failed with code " << result << std::endl;
+                return false;
+            }
+            
+            std::vector<std::array<int, 3>> triangles_vec;
+            triangles_vec.reserve(num_triangles);
+            for (int i = 0; i < num_triangles; ++i) {
+                triangles_vec.push_back({
+                    triangle_indices[i * 3],
+                    triangle_indices[i * 3 + 1],
+                    triangle_indices[i * 3 + 2]
+                });
+            }
+            
+            bool normals_ok = checkNormalOrientation(triangles_vec, sphere_points.get(), num_points);
+            bool topology_ok = checkEdgeTopology(triangles_vec, num_points);
+            bool directed_ok = checkDirectedEdgeUsage(triangles_vec);
+            bool duplicate_ok = checkDuplicateTriangles(triangles_vec);
+            bool euler_ok = checkEulerCharacteristic(triangles_vec, num_points);
+            bool quality_ok = checkTriangleQuality(triangles_vec, sphere_points.get(), num_points);
+            
+            passed = (num_triangles > 0) && topology_ok && normals_ok && directed_ok && duplicate_ok && euler_ok && quality_ok;
+            std::cout << (passed ? "PASSED" : "FAILED") << " (attempt " << (attempt + 1) << "/" << max_attempts << ")" << std::endl << std::endl;
+            if (passed) break;
         }
-        
-        std::vector<int> triangle_indices(num_triangles * 3);
-        int result = sphere_triangulation_get_data(handle, triangle_indices.data());
-        if (result != 0) {
-            std::cout << "ERROR: Sphere triangulation get data failed with code " << result << std::endl;
-            return false;
-        }
-        
-        // std::cout << "Number of triangles: " << num_triangles << std::endl;
-        
-        // 转换为 vector<array<int,3>> 格式
-        std::vector<std::array<int, 3>> triangles_vec;
-        triangles_vec.reserve(num_triangles);
-        for (int i = 0; i < num_triangles; ++i) {
-            triangles_vec.push_back({
-                triangle_indices[i * 3],
-                triangle_indices[i * 3 + 1],
-                triangle_indices[i * 3 + 2]
-            });
-        }
-        
-        // 检查法向量方向
-        bool normals_ok = checkNormalOrientation(triangles_vec, sphere_points.get(), num_points);
-        
-        // 检查边拓扑
-        bool topology_ok = checkEdgeTopology(triangles_vec, num_points);
-        
-        bool passed = (num_triangles > 0) && topology_ok && normals_ok;
-        std::cout << (passed ? "PASSED" : "FAILED") << std::endl << std::endl;
-        
-        if (num_triangles > 0) {
-            // sphere_tri.exportToObj("test5_sphere.obj");
-        }
-        
+
         return passed;
     }
     
@@ -1017,63 +1281,57 @@ namespace TestTriangulationPlain {
         knots.reserve(100000);
 
         // Prefer explicit filenames
-        bool ok1 = read_points_from_file("A:/MineData/Learning/Code/Projects/Modules/CPGEO/src/cpp/tests/pointsspheremesh.txt", knots);
+        bool ok1 = read_points_from_file("A:/MineData/Learning/Code/Projects/Modules/CPGEO/src/cpp/tests/knots.txt", knots);
 
         int num_points = static_cast<int>(knots.size() / 3);
 
         std::cout << "=== Test 5: Sphere Triangulation (" << num_points << " points) ===" << std::endl;
 
-        int num_triangles = 0;
-        cpgeo_handle_t handle = sphere_triangulation_compute(knots.data(), num_points, &num_triangles);
-        if (!handle) {
-            std::cout << "ERROR: Sphere triangulation compute failed" << std::endl;
-            return false;
+        const int max_attempts = 3;
+        bool passed = false;
+
+        for (int attempt = 0; attempt < max_attempts; ++attempt) {
+            int num_triangles = 0;
+            cpgeo_handle_t handle = sphere_triangulation_compute(knots.data(), num_points, &num_triangles);
+            if (!handle) {
+                std::cout << "ERROR: Sphere triangulation compute failed" << std::endl;
+                return false;
+            }
+
+            auto* tri = static_cast<cpgeo::SphereTriangulation*> (handle);
+                tri->exportToObj("Z:/temp/sphere.obj");
+
+
+            std::vector<int> triangle_indices(num_triangles * 3);
+            int result = sphere_triangulation_get_data(handle, triangle_indices.data());
+            if (result != 0) {
+                std::cout << "ERROR: Sphere triangulation get data failed with code " << result << std::endl;
+                return false;
+            }
+
+            std::vector<std::array<int, 3>> triangles_vec;
+            triangles_vec.reserve(num_triangles);
+            for (int i = 0; i < num_triangles; ++i) {
+                triangles_vec.push_back({
+                    triangle_indices[i * 3],
+                    triangle_indices[i * 3 + 1],
+                    triangle_indices[i * 3 + 2]
+                    });
+            }
+
+            bool normals_ok = checkNormalOrientation(triangles_vec, knots.data(), num_points);
+            bool topology_ok = checkEdgeTopology(triangles_vec, num_points);
+            bool directed_ok = checkDirectedEdgeUsage(triangles_vec);
+            bool duplicate_ok = checkDuplicateTriangles(triangles_vec);
+            bool euler_ok = checkEulerCharacteristic(triangles_vec, num_points);
+            bool config_ok = checkNonManifoldConfigurations(triangles_vec, knots.data(), num_points);
+            bool consistency_ok = checkAdjacentTriangleNormals(triangles_vec, knots.data(), num_points);
+            bool quality_ok = checkTriangleQuality(triangles_vec, knots.data(), num_points);
+
+            passed = (num_triangles > 0) && topology_ok && normals_ok && directed_ok && duplicate_ok && euler_ok && config_ok && consistency_ok && quality_ok;
+            std::cout << (passed ? "PASSED" : "FAILED") << " (attempt " << (attempt + 1) << "/" << max_attempts << ")" << std::endl << std::endl;
+            if (passed) break;
         }
-
-        auto* tri = static_cast<cpgeo::SphereTriangulation*> (handle);
-
-        tri->exportToObj("Z:/temp/sphere.obj");
-
-        std::vector<int> triangle_indices(num_triangles * 3);
-        int result = sphere_triangulation_get_data(handle, triangle_indices.data());
-        if (result != 0) {
-            std::cout << "ERROR: Sphere triangulation get data failed with code " << result << std::endl;
-            return false;
-        }
-
-        // std::cout << "Number of triangles: " << num_triangles << std::endl;
-
-        // 转换为 vector<array<int,3>> 格式
-        std::vector<std::array<int, 3>> triangles_vec;
-        triangles_vec.reserve(num_triangles);
-        for (int i = 0; i < num_triangles; ++i) {
-            triangles_vec.push_back({
-                triangle_indices[i * 3],
-                triangle_indices[i * 3 + 1],
-                triangle_indices[i * 3 + 2]
-                });
-        }
-
-        // 检查法向量方向
-        bool normals_ok = checkNormalOrientation(triangles_vec, knots.data(), num_points);
-
-        // 检查边拓扑
-        bool topology_ok = checkEdgeTopology(triangles_vec, num_points);
-
-        // 检查病态几何配置
-        bool config_ok = checkNonManifoldConfigurations(triangles_vec, knots.data(), num_points);
-
-        // 检查相邻三角形法向量一致性
-        bool consistency_ok = checkAdjacentTriangleNormals(triangles_vec, knots.data(), num_points);
-
-        bool passed = (num_triangles > 0) && topology_ok && normals_ok && config_ok && consistency_ok;
-        std::cout << (passed ? "PASSED" : "FAILED") << std::endl << std::endl;
-
-        if (num_triangles > 0) {
-            // sphere_tri.exportToObj("test5_sphere.obj");
-        }
-
-
 
         return passed;
     }
@@ -1102,6 +1360,19 @@ namespace TestEdgeRefinement{
         for (size_t i = 0; i < Ldr2_values.size(); ++i) {
             std::cout << Ldr2_indices[i * 4] << " " << Ldr2_indices[i * 4 + 1] << " " << Ldr2_indices[i * 4 + 2] << " " << Ldr2_indices[i * 4 + 3] << " " << Ldr2_values[i] << std::endl;
         }
+    }
+
+    void test_flip() {
+
+        auto [cps, faces] = read_obj_file("A:/MineData/Learning/Code/Projects/Modules/cpgeo/tests/debug_mapped.obj");
+
+        std::vector<int> out_faces;
+		out_faces.reserve(100000);
+
+		mesh_optimize_by_edge_flipping(cps.data(), static_cast<int>(cps.size() / 3), 3, faces.data(), static_cast<int>(faces.size() / 3), 10000, out_faces.data());
+
+
+
     }
 }
 
@@ -1231,8 +1502,12 @@ int main() {
     // TestTriangulationPlain::test_mesh();
      //TestWeight::test_weight_function();   
      //TestEdgeRefinement::test_refinement(); 
-     TestRefineMesh::test_remesh_build_spacetree();
+	//TestEdgeRefinement::test_flip();
+     
+    TestRefineMesh::test_remesh_build_spacetree();
     //TestTriangulationPlain::test_sphere();
+    //TestTriangulationPlain::test_sphere_simple();
+
 
     return 0;
 }

@@ -18,10 +18,15 @@ def timer(name: str, iterations: int = 10):
         print(f'{name}: {elapsed:.6f} seconds ({iterations} iterations)')
 
 
-data = np.load('tests/testdata.npz')
-cps = data['control_points'].T
-faces = data['mesh_elements']
+# data = np.load('tests/testdata.npz')
+# cps = data['control_points'].T
+# faces = data['mesh_elements']
 
+import pyvista as pv
+obj = pv.read('tests/mesh_uniforming_loop_0_step1.obj')
+cps = obj.points
+faces = obj.faces.reshape((-1, 4))[:, 1:4].astype(np.int32)
+edges = cpgeo.capi.get_mesh_edges(faces)
 
 surf = cpgeo.CPGEO(control_points=cps, cp_faces=faces)
 

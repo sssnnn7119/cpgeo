@@ -1,6 +1,6 @@
 [project]
 name = "cpgeo"
-version = "1.0.0"
+version = "1.0.1"
 description = "A library for control points-based surface."
 readme = "README.md"
 requires-python = ">=3.12"

@@ -3,6 +3,7 @@ Test mesh edge flipping optimization using real test data
 """
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+import cpgeo
 import numpy as np
 import time
 import sys
@@ -35,6 +36,29 @@ def compute_triangle_quality_metrics(vertices, faces):
         
         return min(np.arccos(cos0), np.arccos(cos1), np.arccos(cos2))
     
+    def compute_max_angle(v0, v1, v2):
+        """Compute maximum angle in a triangle"""
+        e01 = v1 - v0
+        e12 = v2 - v1
+        e20 = v0 - v2
+        
+        len01 = np.linalg.norm(e01)
+        len12 = np.linalg.norm(e12)
+        len20 = np.linalg.norm(e20)
+        
+        if len01 < 1e-12 or len12 < 1e-12 or len20 < 1e-12:
+            return np.pi  # Degenerate triangle
+        
+        cos0 = np.dot(e01, -e20) / (len01 * len20)
+        cos1 = np.dot(e12, -e01) / (len12 * len01)
+        cos2 = np.dot(e20, -e12) / (len20 * len12)
+        
+        cos0 = np.clip(cos0, -1, 1)
+        cos1 = np.clip(cos1, -1, 1)
+        cos2 = np.clip(cos2, -1, 1)
+        
+        return max(np.arccos(cos0), np.arccos(cos1), np.arccos(cos2))
+    
     def compute_aspect_ratio(v0, v1, v2):
         """Compute aspect ratio (circumradius / inradius)"""
         e01 = np.linalg.norm(v1 - v0)
@@ -53,14 +77,16 @@ def compute_triangle_quality_metrics(vertices, faces):
         return circumradius / inradius if inradius > 1e-12 else np.inf
     
     min_angles = []
+    max_angles = []
     aspect_ratios = []
     
     for face in faces:
         v0, v1, v2 = vertices[face[0]], vertices[face[1]], vertices[face[2]]
         min_angles.append(compute_min_angle(v0, v1, v2))
+        max_angles.append(compute_max_angle(v0, v1, v2))
         aspect_ratios.append(compute_aspect_ratio(v0, v1, v2))
     
-    return np.array(min_angles), np.array(aspect_ratios)
+    return np.array(min_angles), np.array(max_angles), np.array(aspect_ratios)
 
 
 def test_real_mesh(show_plot=False):
@@ -76,9 +102,14 @@ def test_real_mesh(show_plot=False):
     print("=" * 70)
     
     # Load test data
-    data = np.load('tests/testdata.npz')
-    control_points = data['control_points'].T  # Transpose to get (n, 3)
-    faces = data['mesh_elements'].astype(np.int32)
+    import pyvista as pv
+    surfobj = pv.read('tests/mesh_uniforming_loop_8_step0.obj')
+    control_points = surfobj.points
+    faces = surfobj.faces.reshape((-1, 4))[:, 1:4].astype(np.int32)
+
+    # data = np.load('tests/testdata.npz')
+    # control_points = data['control_points'].T  # Transpose to get (n, 3)
+    # faces = data['mesh_elements'].astype(np.int32)
     
     print(f"\nMesh Statistics:")
     print(f"  Number of vertices: {control_points.shape[0]}")
@@ -114,7 +145,7 @@ def test_real_mesh(show_plot=False):
     print("BEFORE Optimization:")
     print("-" * 70)
     
-    min_angles_before, aspect_ratios_before = compute_triangle_quality_metrics(
+    min_angles_before, max_angles_before, aspect_ratios_before = compute_triangle_quality_metrics(
         control_points, faces
     )
     
@@ -125,6 +156,13 @@ def test_real_mesh(show_plot=False):
     print(f"  Max:    {np.degrees(np.max(min_angles_before)):.2f}°")
     print(f"  Std:    {np.degrees(np.std(min_angles_before)):.2f}°")
     
+    print(f"\nMaximum angles (degrees) [OPTIMIZATION TARGET]:")
+    print(f"  Mean:   {np.degrees(np.mean(max_angles_before)):.2f}°")
+    print(f"  Median: {np.degrees(np.median(max_angles_before)):.2f}°")
+    print(f"  Min:    {np.degrees(np.min(max_angles_before)):.2f}°")
+    print(f"  Max:    {np.degrees(np.max(max_angles_before)):.2f}°")
+    print(f"  Std:    {np.degrees(np.std(max_angles_before)):.2f}°")
+    
     valid_aspect = aspect_ratios_before[np.isfinite(aspect_ratios_before)]
     print(f"\nAspect ratios (circumradius/inradius):")
     print(f"  Mean:   {np.mean(valid_aspect):.2f}")
@@ -133,8 +171,10 @@ def test_real_mesh(show_plot=False):
     print(f"  Max:    {np.max(valid_aspect):.2f}")
     
     # Count poor quality triangles
-    poor_angles = np.sum(min_angles_before < np.radians(20))
-    print(f"\nTriangles with min angle < 20°: {poor_angles} ({100*poor_angles/len(faces):.1f}%)")
+    poor_min_angles = np.sum(min_angles_before < np.radians(20))
+    large_max_angles = np.sum(max_angles_before > np.radians(120))
+    print(f"\nTriangles with min angle < 20°: {poor_min_angles} ({100*poor_min_angles/len(faces):.1f}%)")
+    print(f"Triangles with max angle > 120°: {large_max_angles} ({100*large_max_angles/len(faces):.1f}%)")
     
     # Perform optimization
     print("\n" + "-" * 70)
@@ -156,7 +196,7 @@ def test_real_mesh(show_plot=False):
     print("AFTER Optimization:")
     print("-" * 70)
     
-    min_angles_after, aspect_ratios_after = compute_triangle_quality_metrics(
+    min_angles_after, max_angles_after, aspect_ratios_after = compute_triangle_quality_metrics(
         control_points, optimized_faces
     )
     
@@ -167,6 +207,13 @@ def test_real_mesh(show_plot=False):
     print(f"  Max:    {np.degrees(np.max(min_angles_after)):.2f}°")
     print(f"  Std:    {np.degrees(np.std(min_angles_after)):.2f}°")
     
+    print(f"\nMaximum angles (degrees) [OPTIMIZATION TARGET]:")
+    print(f"  Mean:   {np.degrees(np.mean(max_angles_after)):.2f}°")
+    print(f"  Median: {np.degrees(np.median(max_angles_after)):.2f}°")
+    print(f"  Min:    {np.degrees(np.min(max_angles_after)):.2f}°")
+    print(f"  Max:    {np.degrees(np.max(max_angles_after)):.2f}°")
+    print(f"  Std:    {np.degrees(np.std(max_angles_after)):.2f}°")
+    
     valid_aspect = aspect_ratios_after[np.isfinite(aspect_ratios_after)]
     print(f"\nAspect ratios (circumradius/inradius):")
     print(f"  Mean:   {np.mean(valid_aspect):.2f}")
@@ -174,31 +221,43 @@ def test_real_mesh(show_plot=False):
     print(f"  Min:    {np.min(valid_aspect):.2f}")
     print(f"  Max:    {np.max(valid_aspect):.2f}")
     
-    poor_angles_after = np.sum(min_angles_after < np.radians(20))
-    print(f"\nTriangles with min angle < 20°: {poor_angles_after} ({100*poor_angles_after/len(faces):.1f}%)")
+    poor_min_angles_after = np.sum(min_angles_after < np.radians(20))
+    large_max_angles_after = np.sum(max_angles_after > np.radians(120))
+    print(f"\nTriangles with min angle < 20°: {poor_min_angles_after} ({100*poor_min_angles_after/len(faces):.1f}%)")
+    print(f"Triangles with max angle > 120°: {large_max_angles_after} ({100*large_max_angles_after/len(faces):.1f}%)")
     
     # Summary of improvements
     print("\n" + "=" * 70)
     print("IMPROVEMENT SUMMARY:")
     print("=" * 70)
     
-    mean_angle_improvement = np.degrees(np.mean(min_angles_after) - np.mean(min_angles_before))
-    min_angle_improvement = np.degrees(np.min(min_angles_after) - np.min(min_angles_before))
+    mean_min_angle_improvement = np.degrees(np.mean(min_angles_after) - np.mean(min_angles_before))
+    worst_min_angle_improvement = np.degrees(np.min(min_angles_after) - np.min(min_angles_before))
     
-    print(f"Mean minimum angle improvement: {mean_angle_improvement:+.2f}°")
-    print(f"Worst-case angle improvement:   {min_angle_improvement:+.2f}°")
-    print(f"Poor quality triangles reduced: {poor_angles - poor_angles_after} "
-          f"({100*(poor_angles - poor_angles_after)/poor_angles:.1f}% reduction)")
+    mean_max_angle_improvement = np.degrees(np.mean(max_angles_before) - np.mean(max_angles_after))
+    worst_max_angle_improvement = np.degrees(np.max(max_angles_before) - np.max(max_angles_after))
+    
+    print(f"\nMinimum Angle Metrics:")
+    print(f"  Mean improvement:       {mean_min_angle_improvement:+.2f}°")
+    print(f"  Worst-case improvement: {worst_min_angle_improvement:+.2f}°")
+    print(f"  Poor triangles reduced: {poor_min_angles - poor_min_angles_after} "
+          f"({100*(poor_min_angles - poor_min_angles_after)/max(poor_min_angles, 1):.1f}% reduction)")
+    
+    print(f"\nMaximum Angle Metrics [PRIMARY OPTIMIZATION TARGET]:")
+    print(f"  Mean improvement:       {mean_max_angle_improvement:+.2f}° (lower is better)")
+    print(f"  Worst-case improvement: {worst_max_angle_improvement:+.2f}° (lower is better)")
+    print(f"  Large triangles reduced: {large_max_angles - large_max_angles_after} "
+          f"({100*(large_max_angles - large_max_angles_after)/max(large_max_angles, 1):.1f}% reduction)")
     
     # Verify mesh topology is preserved
     assert optimized_faces.shape == faces.shape, "Face count changed!"
     print(f"\n✅ Mesh topology preserved (face count: {faces.shape[0]})")
     
     # Verify improvement
-    if mean_angle_improvement >= -0.1:  # Allow small numerical tolerance
-        print(f"✅ Mesh quality improved or maintained")
+    if mean_max_angle_improvement >= -0.1:  # Allow small numerical tolerance
+        print(f"✅ Mesh quality improved or maintained (max angles reduced)")
     else:
-        print(f"⚠️  Warning: mesh quality decreased slightly")
+        print(f"⚠️  Warning: mesh quality decreased (max angles increased)")
 
     # Optional visualization using PyVista: original vs optimized mesh in one scene
     if show_plot:

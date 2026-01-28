@@ -69,7 +69,7 @@ def complile_cpp(compile_mode: str = 'Release'):
 
 if __name__ == "__main__":
 
-    compile_mode = 'Release'  # 'Release' or 'Debug'
+    compile_mode = 'release'  # 'Release' or 'Debug'
 
     print("编译 C++ 代码...")
     complile_cpp(compile_mode)
