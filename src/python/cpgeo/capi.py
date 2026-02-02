@@ -814,7 +814,7 @@ def get_mesh_edges(elements: np.ndarray) -> np.ndarray:
     return out_edges.reshape(-1, 3)
 
 
-def uniformly_mesh(init_vertices: np.ndarray, control_points: np.ndarray, tree_handle: cpgeo_handle_t, seed_size: float = 1.0, max_iterations: int = 10):
+def uniformly_mesh(init_vertices: np.ndarray, control_points: np.ndarray, tree_handle: cpgeo_handle_t, seed_size: float = 1.0, max_iterations: int = 4):
     """Uniformly remesh a sphere surface starting from initial vertices.
 
     Args:

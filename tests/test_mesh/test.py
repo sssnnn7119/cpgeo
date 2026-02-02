@@ -10,7 +10,7 @@ sys.path.insert(0, 'src/python')
 
 import cpgeo
 import os
-
+import pyvista as pv
 
 def triangles_to_edges(tris):
     edges = []
@@ -150,6 +150,15 @@ if __name__ == "__main__":
     duplicate_ok = check_duplicate_triangles(mesh2, verbose=True)
     euler_ok = check_euler_characteristic(mesh2, cps.shape[0], verbose=True)
     quality_ok = check_mesh_quality(mesh2, cps, min_angle_deg=0.1, verbose=True)
+
+    try:
+        mesh = pv.PolyData(cps, np.hstack([np.full((mesh2.shape[0], 1), 3), mesh2]))
+        plotter = pv.Plotter()
+        plotter.add_mesh(mesh, color='lightgreen', show_edges=True, opacity=1)
+        plotter.show()
+        
+    except Exception as e:
+        pass
 
     assert topology_ok, "Topology check failed"
     assert directed_ok, "Directed edge usage check failed"

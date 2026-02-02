@@ -70,7 +70,7 @@ CPGEO_API cpgeo_handle_t sphere_triangulation_compute(
         
         tri->triangulate();
         
-        *num_triangles = static_cast<int>(tri->size());
+        *num_triangles = static_cast<int>(tri->size()) ;
         return static_cast<cpgeo_handle_t>(tri);
     } catch (...) {
         return nullptr;

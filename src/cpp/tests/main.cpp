@@ -1504,8 +1504,8 @@ int main() {
      //TestEdgeRefinement::test_refinement(); 
 	//TestEdgeRefinement::test_flip();
      
-    TestRefineMesh::test_remesh_build_spacetree();
-    //TestTriangulationPlain::test_sphere();
+    //TestRefineMesh::test_remesh_build_spacetree();
+    TestTriangulationPlain::test_sphere();
     //TestTriangulationPlain::test_sphere_simple();
 
 

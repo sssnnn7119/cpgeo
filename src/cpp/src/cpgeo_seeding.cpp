@@ -7,7 +7,7 @@
 
 namespace cpgeo {
 
-    static int order = 4;
+    static const int order = 4;
 
     static void export_mesh(std::span<const double> vertices, std::span<const int> faces, const std::string& filename) {
         std::ofstream ofs(filename);
@@ -68,28 +68,9 @@ static std::vector<int> insert_delete_points(
     double seed_size
 ){
 
-    const double ANGLE_THRESHOLD = 150.0 * 3.141592653589793 / 180.0; // radians
-    const int MAX_ITER = 300; // safety guard to avoid pathological infinite loops
+    const int MAX_ITER = 5; // safety guard to avoid pathological infinite loops
     int iter_count = 0;
     std::vector<int> faces;
-
-    auto find_existing_point = [&](const std::array<double, 3>& p) -> int {
-        const double eps2 = 1e-12;
-        int num_points = static_cast<int>(vertices_sphere.size() / 3);
-        for (int i = 0; i < num_points; ++i) {
-            double dx = vertices_sphere[i * 3 + 0] - p[0];
-            double dy = vertices_sphere[i * 3 + 1] - p[1];
-            double dz = vertices_sphere[i * 3 + 2] - p[2];
-            double d2 = dx * dx + dy * dy + dz * dz;
-            if (d2 < eps2) {
-                return i;
-            }
-        }
-        return -1;
-    };
-
-    // create triangulator once and reuse, update points each iteration
-    
 
     while (true) {
         if (++iter_count > MAX_ITER) {
@@ -106,8 +87,6 @@ static std::vector<int> insert_delete_points(
         faces.resize(triangulator.size() * 3);
         triangulator.getTriangleIndices(faces);
 
-        //triangulator.exportToObj("Z:/temp/sphere_seeding_iter_" + std::to_string(iter_count) + ".obj");
-
         if (faces.empty()) {
             break;
         }
@@ -117,12 +96,17 @@ static std::vector<int> insert_delete_points(
         // refine mesh by edge flipping
         faces = mesh_optimize_by_edge_flipping(r, 3, faces, 100);
 
-		//export_mesh(r, faces, "Z:/temp/sphere_seeding_iter_" + std::to_string(iter_count) + "_flipped.obj");
-
-        // Edge-based small boundary edge merging
-        double min_edge_length = seed_size * 0.3;
+        // Edge-based small boundary edge merging + large edge splitting (batched)
+        double min_edge_length = seed_size * 0.5;
         double max_edge_length = seed_size * 1.5;
         auto edges = extractEdgesWithNumber(faces);
+
+        const int num_points = static_cast<int>(vertices_sphere.size() / 3);
+        std::vector<bool> delete_flag(num_points, false);
+        std::vector<std::array<double, 3>> insert_points;
+
+        insert_points.reserve(edges.size());
+
         for (const auto& [edge, count] : edges) {
             int a = edge.first;
             int b = edge.second;
@@ -136,193 +120,88 @@ static std::vector<int> insert_delete_points(
             double dz = ma[2] - mb[2];
             double edge_length = std::sqrt(dx * dx + dy * dy + dz * dz);
 
-             // 4) Edge detection: small boundary edges merging (independent pass)
-             if (edge_length < min_edge_length) {
-                // merge into midpoint: keep lower index, erase higher index
+            // 1) Edge detection: small boundary edges merging (batch)
+            if (edge_length < min_edge_length) {
                 if (a > b) std::swap(a, b);
 
-                std::span<double, 3> va(vertices_sphere.data() + a * 3, 3);
-                std::span<double, 3> vb(vertices_sphere.data() + b * 3, 3);
-
-                std::array<double, 3> new_point{ (va[0] + vb[0]) / 2.0, (va[1] + vb[1]) / 2.0, (va[2] + vb[2]) / 2.0 };
-                double norm = std::sqrt(new_point[0] * new_point[0] + new_point[1] * new_point[1] + new_point[2] * new_point[2]);
-                if (norm > 0) { new_point[0] /= norm; new_point[1] /= norm; new_point[2] /= norm; }
-
-                vertices_sphere[a * 3 + 0] = new_point[0];
-                vertices_sphere[a * 3 + 1] = new_point[1];
-                vertices_sphere[a * 3 + 2] = new_point[2];
-
-                vertices_sphere.erase(vertices_sphere.begin() + b * 3, vertices_sphere.begin() + b * 3 + 3);
-                //std::cout << " (edge merge)" << std::endl;
-                any_change = true;
-                break;
-             }
-
-            // 5) Edge detection: large boundary edges splitting
-            if (edge_length > max_edge_length) {
-                if (a > b) std::swap(a, b);
-
-                std::span<double, 3> va(vertices_sphere.data() + a * 3, 3);
-                std::span<double, 3> vb(vertices_sphere.data() + b * 3, 3);
-
-                std::array<double, 3> new_point{ (va[0] + vb[0]) / 2.0, (va[1] + vb[1]) / 2.0, (va[2] + vb[2]) / 2.0 };
-                double norm = std::sqrt(new_point[0] * new_point[0] + new_point[1] * new_point[1] + new_point[2] * new_point[2]);
-                if (norm > 0) { new_point[0] /= norm; new_point[1] /= norm; new_point[2] /= norm; }
-
-                if (find_existing_point(new_point) >= 0) {
+                if (delete_flag[a] || delete_flag[b]) {
+                    // one of the endpoints is already marked for deletion
                     continue;
                 }
 
-                vertices_sphere.push_back(new_point[0]); vertices_sphere.push_back(new_point[1]); vertices_sphere.push_back(new_point[2]);
+                std::span<double, 3> va(vertices_sphere.data() + a * 3, 3);
+                std::span<double, 3> vb(vertices_sphere.data() + b * 3, 3);
 
-                auto newpt = map_points(std::span<double, 3>(vertices_sphere.data() + vertices_sphere.size() -3,3), tree, control_points);
-                double expected_newpt[3] = {
-                    (r[a * 3 + 0] + r[b * 3 + 0]) / 2.0,
-                    (r[a * 3 + 1] + r[b * 3 + 1]) / 2.0,
-                    (r[a * 3 + 2] + r[b * 3 + 2]) / 2.0
-                };
+                std::array<double, 3> new_point{ (va[0] + vb[0]) / 2.0, (va[1] + vb[1]) / 2.0, (va[2] + vb[2]) / 2.0 };
+                double norm = std::sqrt(new_point[0] * new_point[0] + new_point[1] * new_point[1] + new_point[2] * new_point[2]);
+                if (norm > 0) { new_point[0] /= norm; new_point[1] /= norm; new_point[2] /= norm; }
 
-                //std::cout << " New pt mapped: (" << newpt[0] << ", " << newpt[1] << ", " << newpt[2] << "), expected: ("
-                //          << expected_newpt[0] << ", " << expected_newpt[1] << ", " << expected_newpt[2] << ")" << std::endl;
-
-                //std::cout << " (edge split)" << std::endl;
+                delete_flag[a] = true;
+                delete_flag[b] = true;
+                insert_points.push_back(new_point);
                 any_change = true;
-                break;
+                continue;
             }
 
+            // 2) Edge detection: large boundary edges splitting (batch)
+            if (edge_length > max_edge_length) {
+                if (a > b) std::swap(a, b);
 
+                if (delete_flag[a] || delete_flag[b]) {
+                    // one of the endpoints is already marked for deletion
+                    continue;
+                }
+
+                std::span<double, 3> va(vertices_sphere.data() + a * 3, 3);
+                std::span<double, 3> vb(vertices_sphere.data() + b * 3, 3);
+
+                std::array<double, 3> new_point{ (va[0] + vb[0]) / 2.0, (va[1] + vb[1]) / 2.0, (va[2] + vb[2]) / 2.0 };
+                double norm = std::sqrt(new_point[0] * new_point[0] + new_point[1] * new_point[1] + new_point[2] * new_point[2]);
+                if (norm > 0) { new_point[0] /= norm; new_point[1] /= norm; new_point[2] /= norm; }
+
+                insert_points.push_back(new_point);
+                any_change = true;
+                continue;
+            }
         }
 
-        if (any_change) continue;
-
-        // // Combined triangle checks: oversized triangle (split), very small area (merge), large-angle (split)
-        // double max_area = seed_size * seed_size * 1.2;
-        // double min_area = seed_size * seed_size * 0.2;
-        // double cos_threshold = std::cos(ANGLE_THRESHOLD);
-        // for (int tridx = 0; tridx < static_cast<int>(faces.size() / 3); ++tridx) {
-        //     int v0_idx = faces[tridx * 3 + 0];
-        //     int v1_idx = faces[tridx * 3 + 1];
-        //     int v2_idx = faces[tridx * 3 + 2];
-
-        //     // Use mapped/batch-mapped points for geometric tests to reflect current mapping
-        //     std::span<double, 3> mv0(r.data() + v0_idx * 3, 3);
-        //     std::span<double, 3> mv1(r.data() + v1_idx * 3, 3);
-        //     std::span<double, 3> mv2(r.data() + v2_idx * 3, 3);
-
-        //     double area = triangleArea(mv0, mv1, mv2);
-
-        //     // 1) Oversized triangle -> insert centroid (use actual sphere coords for insertion)
-        //     if (area > max_area) {
-        //         std::span<double, 3> sv0(vertices_sphere.data() + v0_idx * 3, 3);
-        //         std::span<double, 3> sv1(vertices_sphere.data() + v1_idx * 3, 3);
-        //         std::span<double, 3> sv2(vertices_sphere.data() + v2_idx * 3, 3);
-
-        //         std::array<double, 3> new_point{
-        //             (sv0[0] + sv1[0] + sv2[0]) / 3.0,
-        //             (sv0[1] + sv1[1] + sv2[1]) / 3.0,
-        //             (sv0[2] + sv1[2] + sv2[2]) / 3.0
-        //         };
-        //         double norm = std::sqrt(new_point[0]*new_point[0] + new_point[1]*new_point[1] + new_point[2]*new_point[2]);
-        //         if (norm > 0) { new_point[0] /= norm; new_point[1] /= norm; new_point[2] /= norm; }
-
-        //         if (find_existing_point(new_point) >= 0) {
-        //             continue;
-        //         }
-
-        //         vertices_sphere.push_back(new_point[0]); vertices_sphere.push_back(new_point[1]); vertices_sphere.push_back(new_point[2]);
-        //         any_change = true; break;
-        //     }
-
-        //     // 2) Very small area -> merge triple into averaged point
-        //     if (area < min_area) {
-        //         std::span<double, 3> sv0(vertices_sphere.data() + v0_idx * 3, 3);
-        //         std::span<double, 3> sv1(vertices_sphere.data() + v1_idx * 3, 3);
-        //         std::span<double, 3> sv2(vertices_sphere.data() + v2_idx * 3, 3);
-
-        //         std::array<double, 3> new_point{ (sv0[0] + sv1[0] + sv2[0]) / 3.0, (sv0[1] + sv1[1] + sv2[1]) / 3.0, (sv0[2] + sv1[2] + sv2[2]) / 3.0 };
-        //         double norm = std::sqrt(new_point[0]*new_point[0] + new_point[1]*new_point[1] + new_point[2]*new_point[2]);
-        //         if (norm > 0) { new_point[0] /= norm; new_point[1] /= norm; new_point[2] /= norm; }
-
-        //         if (find_existing_point(new_point) >= 0) {
-        //             continue;
-        //         }
-
-        //         vertices_sphere.push_back(new_point[0]); vertices_sphere.push_back(new_point[1]); vertices_sphere.push_back(new_point[2]);
-
-        //         // remove old points in descending index order
-        //         if (v0_idx > v1_idx) std::swap(v0_idx, v1_idx);
-        //         if (v1_idx > v2_idx) std::swap(v1_idx, v2_idx);
-        //         if (v0_idx > v1_idx) std::swap(v0_idx, v1_idx);
-        //         vertices_sphere.erase(vertices_sphere.begin() + v2_idx * 3, vertices_sphere.begin() + v2_idx * 3 + 3);
-        //         vertices_sphere.erase(vertices_sphere.begin() + v1_idx * 3, vertices_sphere.begin() + v1_idx * 3 + 3);
-        //         vertices_sphere.erase(vertices_sphere.begin() + v0_idx * 3, vertices_sphere.begin() + v0_idx * 3 + 3);
-        //         any_change = true; break;
-        //     }
-
-        //     // 3) Large-angle splitting: check angles via cosine
-        //     auto vec01 = std::array<double, 3>{ mv1[0] - mv0[0], mv1[1] - mv0[1], mv1[2] - mv0[2] };
-        //     auto vec02 = std::array<double, 3>{ mv2[0] - mv0[0], mv2[1] - mv0[1], mv2[2] - mv0[2] };
-        //     auto vec10 = std::array<double, 3>{ mv0[0] - mv1[0], mv0[1] - mv1[1], mv0[2] - mv1[2] };
-        //     auto vec12 = std::array<double, 3>{ mv2[0] - mv1[0], mv2[1] - mv1[1], mv2[2] - mv1[2] };
-        //     auto vec20 = std::array<double, 3>{ mv0[0] - mv2[0], mv0[1] - mv2[1], mv0[2] - mv2[2] };
-        //     auto vec21 = std::array<double, 3>{ mv1[0] - mv2[0], mv1[1] - mv2[1], mv1[2] - mv2[2] };
-
-        //     auto cos_between = [](const std::array<double,3>& u, const std::array<double,3>& v){
-        //         double dot = u[0]*v[0] + u[1]*v[1] + u[2]*v[2];
-        //         double nu = std::sqrt(u[0]*u[0]+u[1]*u[1]+u[2]*u[2]);
-        //         double nv = std::sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
-        //         if (nu <= 0 || nv <= 0) return 1.0;
-        //         double c = dot / (nu * nv);
-        //         if (c > 1.0) c = 1.0; if (c < -1.0) c = -1.0; return c;
-        //     };
-
-        //     double cos0 = cos_between(vec01, vec02);
-        //     double cos1 = cos_between(vec10, vec12);
-        //     double cos2 = cos_between(vec20, vec21);
-
-        //     if (cos0 < cos_threshold) {
-        //         std::span<double, 3> sv1(vertices_sphere.data() + v1_idx * 3, 3);
-        //         std::span<double, 3> sv2(vertices_sphere.data() + v2_idx * 3, 3);
-        //         std::array<double, 3> new_point{ (sv1[0] + sv2[0]) / 2.0, (sv1[1] + sv2[1]) / 2.0, (sv1[2] + sv2[2]) / 2.0 };
-        //         double norm = std::sqrt(new_point[0]*new_point[0] + new_point[1]*new_point[1] + new_point[2]*new_point[2]);
-        //         if (norm > 0) { new_point[0] /= norm; new_point[1] /= norm; new_point[2] /= norm; }
-        //         if (find_existing_point(new_point) >= 0) {
-        //             continue;
-        //         }
-        //         vertices_sphere.push_back(new_point[0]); vertices_sphere.push_back(new_point[1]); vertices_sphere.push_back(new_point[2]);
-        //         any_change = true; break;
-        //     }
-        //     if (cos1 < cos_threshold) {
-        //         std::span<double, 3> sv0(vertices_sphere.data() + v0_idx * 3, 3);
-        //         std::span<double, 3> sv2(vertices_sphere.data() + v2_idx * 3, 3);
-        //         std::array<double, 3> new_point{ (sv0[0] + sv2[0]) / 2.0, (sv0[1] + sv2[1]) / 2.0, (sv0[2] + sv2[2]) / 2.0 };
-        //         double norm = std::sqrt(new_point[0]*new_point[0] + new_point[1]*new_point[1] + new_point[2]*new_point[2]);
-        //         if (norm > 0) { new_point[0] /= norm; new_point[1] /= norm; new_point[2] /= norm; }
-        //         if (find_existing_point(new_point) >= 0) {
-        //             continue;
-        //         }
-        //         vertices_sphere.push_back(new_point[0]); vertices_sphere.push_back(new_point[1]); vertices_sphere.push_back(new_point[2]);
-        //         any_change = true; break;
-        //     }
-        //     if (cos2 < cos_threshold) {
-        //         std::span<double, 3> sv0(vertices_sphere.data() + v0_idx * 3, 3);
-        //         std::span<double, 3> sv1(vertices_sphere.data() + v1_idx * 3, 3);
-        //         std::array<double, 3> new_point{ (sv0[0] + sv1[0]) / 2.0, (sv0[1] + sv1[1]) / 2.0, (sv0[2] + sv1[2]) / 2.0 };
-        //         double norm = std::sqrt(new_point[0]*new_point[0] + new_point[1]*new_point[1] + new_point[2]*new_point[2]);
-        //         if (norm > 0) { new_point[0] /= norm; new_point[1] /= norm; new_point[2] /= norm; }
-        //         if (find_existing_point(new_point) >= 0) {
-        //             continue;
-        //         }
-        //         vertices_sphere.push_back(new_point[0]); vertices_sphere.push_back(new_point[1]); vertices_sphere.push_back(new_point[2]);
-        //         any_change = true; break;
-        //     }
-        // }
-
-		// if (any_change) continue;
-
+        
         // if nothing changed this round, we're done
         if (!any_change) break;
+        else {
+            std::vector<double> new_vertices;
+            new_vertices.reserve(vertices_sphere.size() + insert_points.size() * 3);
+
+            for (int i = 0; i < num_points; i++) {
+                if (delete_flag[i]) continue;
+                new_vertices.push_back(vertices_sphere[i * 3 + 0]);
+                new_vertices.push_back(vertices_sphere[i * 3 + 1]);
+                new_vertices.push_back(vertices_sphere[i * 3 + 2]);
+            }
+
+            for (const auto& p : insert_points) {
+                new_vertices.push_back(p[0]);
+                new_vertices.push_back(p[1]);
+                new_vertices.push_back(p[2]);
+            }
+
+            vertices_sphere = std::move(new_vertices);
+        }
+
     }
+    
+    // // update stored points each iteration to reflect modifications
+    SphereTriangulation triangulator(vertices_sphere);
+    triangulator.triangulate();
+    faces.clear();
+    faces.resize(triangulator.size() * 3);
+    triangulator.getTriangleIndices(faces);
+
+    auto r = map_points_batch(vertices_sphere, tree, control_points);
+
+    // refine mesh by edge flipping
+    faces = mesh_optimize_by_edge_flipping(r, 3, faces, 100);
+    
     return faces;
 }
 
@@ -809,7 +688,7 @@ static std::vector<double> newton_step(
     
     // Solve Hessian * delta_uv = -gradient using conjugate gradient
     std::vector<double> delta_uv_filtered;
-    bool converged = conjugate_gradient(csr_row_ptr, csr_col_idx, csr_values, rhs, delta_uv_filtered, 40000, 1e-5);
+    bool converged = conjugate_gradient(csr_row_ptr, csr_col_idx, csr_values, rhs, delta_uv_filtered, 10000, 1e-5);
 
     
     
@@ -874,9 +753,9 @@ void vertice_smoothing(
 	auto knots = tree.get_knots();
 	auto thresholds = tree.get_thresholds();
 
-    const int max_newton_iters = 100000;
+    const int max_newton_iters = 50;
     const double loss_tol = 1e-6;
-    const double grad_tol = 1e-3;
+    const double grad_tol = 1e-2;
     
     double prev_loss = std::numeric_limits<double>::infinity();
 
@@ -959,6 +838,7 @@ std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
 
         // refine mesh by edge flipping
         auto faces_new = insert_delete_points(vertices_sphere, control_points, tree, seed_size);
+
 
         bool any_change = false;
         for (int i = 0; i < static_cast<int>(faces.size()); i++) {

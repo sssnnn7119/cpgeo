@@ -131,12 +131,36 @@ class CPGEO:
             np.ndarray: The mapped points in reference coordinates, shape (N, 3).
         """
 
-        indices_cps, indices_pts, w = self.get_weights2(points_plane)
-        mapped_points_cpp = capi.get_mapped_points(indices_cps, indices_pts, w, self._control_points, points_plane.shape[0])
+        results = self.get_weights2(points_plane)
+        indices_cps, indices_pts, w = results[:3]
+        r = capi.get_mapped_points(indices_cps, indices_pts, w, self._control_points, points_plane.shape[0])
 
-        return mapped_points_cpp
+        result = []
+        if derivative == 0:
+            return r
+        result.append(r)
+        if derivative >= 1:
+            wdu = results[3]
+            rdu = np.stack([
+                capi.get_mapped_points(indices_cps, indices_pts, wdu[0], self._control_points, points_plane.shape[0]),
+                capi.get_mapped_points(indices_cps, indices_pts, wdu[1], self._control_points, points_plane.shape[0]),
+            ], axis=-1)
+
+            result.append(rdu)
+        if derivative == 2:
+            wdu2 = results[4]
+            rdu2 = np.stack([
+                capi.get_mapped_points(indices_cps, indices_pts, wdu2[0], self._control_points, points_plane.shape[0]),
+                capi.get_mapped_points(indices_cps, indices_pts, wdu2[1], self._control_points, points_plane.shape[0]),
+                capi.get_mapped_points(indices_cps, indices_pts, wdu2[2], self._control_points, points_plane.shape[0]),
+                capi.get_mapped_points(indices_cps, indices_pts, wdu2[3], self._control_points, points_plane.shape[0]),
+            ], axis=-1).reshape([-1, 3, 2, 2])
+
+            result.append(rdu2)
+
+        return tuple(result)
     
-    def map3(self, points: np.ndarray):
+    def map3(self, points: np.ndarray, derivative: int = 0):
         """
         Map the given points in reference coordinates to physical coordinates.
 
@@ -145,12 +169,11 @@ class CPGEO:
         Returns:
             np.ndarray: The mapped points in physical coordinates, shape (N, 3).
         """
-        indices_cps, indices_pts, w = self.get_weights3(points)
-        mapped_points_cpp = capi.get_mapped_points(indices_cps, indices_pts, w, self._control_points, points.shape[0])
+        points_plane = self.reference_to_curvilinear(points)
+        return self.map2(points_plane, derivative=derivative)
+    
 
-        return mapped_points_cpp
-
-    def uniformly_mesh(self, init_vertices: np.ndarray = None, seed_size: float = 1.0, max_iterations: int = 10, update_self: bool = False):
+    def uniformly_mesh(self, init_vertices: np.ndarray = None, seed_size: float = 1.0, max_iterations: int = 10):
         """
         Run uniform remeshing using the C API wrapper `capi.uniformly_mesh`.
 
@@ -158,7 +181,6 @@ class CPGEO:
             init_vertices (np.ndarray, optional): Initial sphere vertices (N,3). If None, uses current knots as starting vertices.
             seed_size (float): Desired seed size for remeshing.
             max_iterations (int): Maximum number of uniforming iterations.
-            update_self (bool): If True, replace the model's knots and faces with the remeshed result and rebuild the space tree.
 
         Returns:
             Tuple[np.ndarray, np.ndarray]: (vertices (M,3), faces (F,3)) from the remeshing.
@@ -185,18 +207,104 @@ class CPGEO:
             max_iterations
         )
 
-        if update_self:
-            # update internal state and rebuild thresholds & space tree
-            self._knots = new_vertices
-            self._cp_faces = new_faces
-            # recompute thresholds and rebuild space tree
-            self._thresholds = capi.compute_thresholds(self._knots, k=self._knot_influence_num)
-            if self._space_tree is not None:
-                capi.space_tree_destroy(self._space_tree)
-            self._space_tree = capi.space_tree_create(self._knots, self._thresholds)
-
         return new_vertices, new_faces    
     
+    def _post_process(self, initial_points: np.ndarray = None):
+        """
+        Post-process the CPGEO model after remeshing to update control points for error minimization.
+        """
+
+        num_points = self.control_points.shape[0]
+
+        # post process
+
+        indices, rdot = self.get_weights2(self._knots, derivative=0)
+        r = self.map3(self._knots)
+
+        alpha = 1.0
+        loss0 = ((r - initial_points)**2).sum()
+        loss1 = ((self.control_points - initial_points)**2).sum()
+        loss = loss0 + loss1 * alpha
+        print()
+        print('before refine P0: loss = %e' % (loss))
+
+        ldr = 2 * (r - initial_points)
+        ldr_2_values = 2 * torch.ones([3, num_points]).flatten()
+        ldr_2_indices = torch.stack([
+            torch.arange(0, 3).reshape([3, 1]).repeat(1, num_points),
+            torch.arange(0, num_points).reshape([1, num_points]).repeat(3, 1),
+            torch.arange(0, 3).reshape([3, 1]).repeat(1, num_points),
+            torch.arange(0, num_points).reshape([1, num_points]).repeat(3, 1),
+        ],
+                                    dim=0).reshape([4, -1])
+        ldr_2 = torch.sparse_coo_tensor(ldr_2_indices,
+                                        ldr_2_values,
+                                        size=[3, num_points, 3, num_points])
+
+        l0dot = _sparse_methods._from_Adr_to_Adot(indices=indices,
+                                                  Adr=ldr,
+                                                  rdot=rdot,
+                                                  numel_output=num_points)
+
+        l1dot = 2 * (self.control_points - initial_points)
+
+        index_boundary = torch.tensor(sum([
+            self.boundary_points_index[i].tolist()
+            for i in range(len(self.boundary_points_index))
+        ], []))
+        index_boundary2 = index_boundary.clone()
+        
+        for i in range(5):
+            index_boundary2 = self.cp_elements[torch.where(torch.isin(self.cp_elements, index_boundary2).sum(dim=1) > 0)[0]].unique()
+
+        index_no_boundary = torch.tensor(
+            list(set(range(num_points)) - set(index_boundary2.tolist())))
+
+        ldot = l0dot + l1dot * alpha
+
+        ldot = ldot[:, index_no_boundary]
+
+        l0dot_2 = _sparse_methods._from_Sdr_to_Sdot_2(indices=indices,
+                                                      Sdr_2=ldr_2,
+                                                      rdot=rdot)
+
+        l1dot_2 = ldr_2
+
+        ldot_2 = l0dot_2 + l1dot_2 * alpha
+
+        ldot_2 = ldot_2.index_select(1, index_no_boundary).index_select(
+            3, index_no_boundary)
+
+        ldot_2 = _sparse_methods._sparse_reshape(
+            ldot_2, 2 * [3 * ldot_2.shape[1]]).coalesce()
+
+        dP = _sparse_methods._conjugate_gradient(ldot_2.indices(),
+                                                 ldot_2.values(),
+                                                 -ldot.flatten(),
+                                                 tol=1e-7,
+                                                 max_iter=30000)
+        dP.view(-1)[dP.view(-1).isnan()] = 0
+        dP = dP.reshape([3, -1])
+
+        self.cp_vertices[:,
+                         index_no_boundary] = self.cp_vertices[:,
+                                                               index_no_boundary] + dP
+
+        r1 = self.map(self.knots)
+
+        epsilon = torch.zeros([3, 3, 3])
+        epsilon[0, 1, 2] = epsilon[1, 2, 0] = epsilon[2, 0, 1] = 1
+        epsilon[0, 2, 1] = epsilon[2, 1, 0] = epsilon[1, 0, 2] = -1
+
+        loss0_new = ((r1 - initial_points)**2).sum()
+        loss1_new = ((self.cp_vertices - initial_points)**2).sum() * alpha
+
+        print('after refine P0: loss = %e' % (loss0_new + loss1_new * alpha))
+
+        self.cp_elements = _mesh_methods.refine_triangular_mesh(
+        self.cp_vertices.T, self.cp_elements)
+
+
 
     def refine_surface(self, seed_size: float = 1.0, max_iterations: int = 10):
         new_vertices, new_faces = self.uniformly_mesh(init_vertices=self._knots, seed_size=seed_size, max_iterations=max_iterations)
@@ -207,6 +315,10 @@ class CPGEO:
         self._cp_faces = new_faces
 
         self.initialize()
+
+        # new_cps = self._post_process()
+
+        # self._control_points = new_cps
 
         
 
@@ -355,7 +467,7 @@ class CPGEO:
             boundary_points_index = capi.extract_boundary_loops(faces1)
             if len(boundary_points_index) == 1:
                 break
-            thre -= 1
+            thre = int(thre / 3)
 
         if index_half1.shape[0] < num_points / 2:
             index_half1 = np.array(
@@ -380,7 +492,7 @@ class CPGEO:
                 set(boundary_points_index.tolist())))
 
         phi0 = np.arccos(1 - 2 * index_half1_.shape[0] / num_points)
-        r0 = 2 * np.sin(phi0) / (1 - np.cos(phi0))
+        r0 = 2 * np.sin(phi0) / (1 + np.cos(phi0))
 
         theta = (np.arange(0, boundary_points_index.shape[0]) / boundary_points_index.shape[0]) * 2 * np.pi
         knots_cur[boundary_points_index] = r0 * np.stack(
@@ -410,7 +522,7 @@ class CPGEO:
         knots3 = knots3[:, [1,2,0]]
         knots_cur = self.reference_to_curvilinear(knots3)
         norms = np.linalg.norm(knots_cur, axis=1)
-        threshold = np.sort(norms)[int(knots_cur.shape[0] * 2 / 3)]
+        threshold = np.sort(norms)[int(knots_cur.shape[0] * 0.9)]
         index_now = np.where(norms < threshold)[0]
         knots_cur = utils.mesh_regulation_2D(
             knots_cur, faces, index_now)
@@ -420,7 +532,7 @@ class CPGEO:
         knots3[:, 2] *= -1
         knots_cur = self.reference_to_curvilinear(knots3)
         norms = np.linalg.norm(knots_cur, axis=1)
-        threshold = np.sort(norms)[int(knots_cur.shape[0] * 2 / 3)]
+        threshold = np.sort(norms)[int(knots_cur.shape[0] * 0.9)]
         index_now = np.where(norms < threshold)[0]
         knots_cur = utils.mesh_regulation_2D(
             knots_cur, faces, index_now)
@@ -431,7 +543,7 @@ class CPGEO:
         knots3 = knots3[:, [1,2,0]]
         knots_cur = self.reference_to_curvilinear(knots3)
         norms = np.linalg.norm(knots_cur, axis=1)
-        threshold = np.sort(norms)[int(knots_cur.shape[0] * 2 / 3)]
+        threshold = np.sort(norms)[int(knots_cur.shape[0] * 0.9)]
         index_now = np.where(norms < threshold)[0]
         knots_cur = utils.mesh_regulation_2D(
             knots_cur, faces, index_now)
@@ -441,7 +553,7 @@ class CPGEO:
         knots3[:, 2] *= -1
         knots_cur = self.reference_to_curvilinear(knots3)
         norms = np.linalg.norm(knots_cur, axis=1)
-        threshold = np.sort(norms)[int(knots_cur.shape[0] * 2 / 3)]
+        threshold = np.sort(norms)[int(knots_cur.shape[0] * 0.9)]
         index_now = np.where(norms < threshold)[0]
         knots_cur = utils.mesh_regulation_2D(
             knots_cur, faces, index_now)
@@ -508,3 +620,14 @@ class CPGEO:
         )
         model.initialize()
         return model
+    
+def show_surf(vertices: np.ndarray, faces: np.ndarray):
+    if vertices.shape[1] == 2:
+        temp = np.zeros([vertices.shape[0], 3])
+        temp[:, :2] = vertices
+        vertices = temp
+    mesh = pv.PolyData(vertices, np.hstack([np.full((faces.shape[0], 1), 3), faces]))
+
+    plotter = pv.Plotter()
+    plotter.add_mesh(mesh, color='lightblue', show_edges=True, opacity=1.0)
+    plotter.show()
