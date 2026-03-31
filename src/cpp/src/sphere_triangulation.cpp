@@ -49,12 +49,11 @@ void SphereTriangulation::triangulate() {
     // Collect indices of points in the northern hemisphere
     std::vector<int> idx_north_part, idx_south_part;
     idx_north_part.reserve(num_points);  // reserve space
+    idx_south_part.reserve(num_points);
     for(int i = 0; i < num_points; ++i) {
         double z = sphere_points[i * 3 + 2];
-        if (z <= 0) {
+        if (z <= 0.7) {
             idx_north_part.push_back(i);
-        } else {
-            idx_south_part.push_back(i);
         }
     }
 
@@ -67,12 +66,46 @@ void SphereTriangulation::triangulate() {
         north_idx_map[i] = idx_north_part[i];
     }
 
-    std::vector<int> triangles_north = triangulateGivenPoints(uv_north_part);
+    std::vector<int> triangles_north_init = triangulateGivenPoints(uv_north_part);
     // Map back to original indices
 
     #pragma omp parallel for
-    for (int i = 0; i < triangles_north.size(); ++i) {
-        triangles_north[i] = idx_north_part[triangles_north[i]];
+    for (int i = 0; i < triangles_north_init.size(); ++i) {
+        triangles_north_init[i] = idx_north_part[triangles_north_init[i]];
+    }
+
+
+
+    // Remove the triangles that near the equator (having any vertex with z > 0)
+    std::vector<int> triangles_north;
+    std::vector<bool> index_remain_north(num_points, false);
+    std::vector<bool> index_remain_south(num_points, true);
+    for (int i = 0; i < idx_north_part.size(); ++i) {
+        double z0 = sphere_points[idx_north_part[i] * 3 + 2];
+        if (z0 < 0) {
+            index_remain_north[idx_north_part[i]] = true;
+        }
+    }
+    for(int i=0; i<triangles_north_init.size()/3; ++i) {
+        int v0 = triangles_north_init[i * 3 + 0];
+        int v1 = triangles_north_init[i * 3 + 1];
+        int v2 = triangles_north_init[i * 3 + 2];
+
+        if (index_remain_north[v0] &&
+            index_remain_north[v1] &&
+            index_remain_north[v2]) {
+            triangles_north.push_back(v0);
+            triangles_north.push_back(v1);
+            triangles_north.push_back(v2);
+            index_remain_south[v0] = false;
+            index_remain_south[v1] = false;
+            index_remain_south[v2] = false;
+        }
+    }
+    for(int i = 0; i < num_points; ++i) {
+        if (index_remain_south[i]) {
+            idx_south_part.push_back(i);
+        }
     }
 
     // Get the boundary edges from northern hemisphere triangulation
@@ -80,27 +113,26 @@ void SphereTriangulation::triangulate() {
 
     // Create UV points for southern hemisphere including boundary points
     std::vector<double> uv_south_part;
-    uv_south_part.reserve((num_points + boundary_edges.size()) * 2);
+    uv_south_part.reserve((num_points) * 2);
     std::unordered_map<int, int> south_idx_map;  // original idx to south part idx
-    for (size_t i = 0; i < idx_south_part.size(); ++i) {
-        uv_south_part.push_back(uv_south[idx_south_part[i] * 2 + 0]);
-        uv_south_part.push_back(uv_south[idx_south_part[i] * 2 + 1]);
-        south_idx_map[i] = idx_south_part[i];
+    int idx_map = 0;
+    for (idx_map = 0; idx_map < idx_south_part.size(); ++idx_map) {
+        uv_south_part.push_back(uv_south[idx_south_part[idx_map] * 2 + 0]);
+        uv_south_part.push_back(uv_south[idx_south_part[idx_map] * 2 + 1]);
+        south_idx_map[idx_map] = idx_south_part[idx_map];
     }
 
     // include boundary points
     for (int idx : boundary_edges) {
-        double u_boundary = uv_north[idx * 2 + 0];
-        double v_boundary = uv_north[idx * 2 + 1];
+        double u_boundary = uv_south[idx * 2 + 0];
+        double v_boundary = uv_south[idx * 2 + 1];
 
         // Project to the unit circle in southern hemisphere
-        // Transform the stereographic coordinate from one pole to the other
-        // This corresponds to circle inversion: u_s = u_n / (u_n^2 + v_n^2)
         double denom = u_boundary * u_boundary + v_boundary * v_boundary;
         double u_south, v_south;
         if (denom > 1e-12) {
-            u_south = u_boundary / denom * 3.0;
-            v_south = v_boundary / denom * 3.0;
+            u_south = u_boundary;
+            v_south = v_boundary;
         } else {
             // Should not happen for boundary points near equator
              u_south = 0.0;
@@ -109,7 +141,8 @@ void SphereTriangulation::triangulate() {
 
         uv_south_part.push_back(u_south);
         uv_south_part.push_back(v_south);
-        south_idx_map[uv_south_part.size() / 2 - 1] = idx;  // map to original index
+        south_idx_map[idx_map] = idx;  // map to original index
+        idx_map++;
     }
 
     std::vector<int> triangles_south = triangulateGivenPoints(std::span<const double>(uv_south_part.data(), uv_south_part.size()));
@@ -129,10 +162,15 @@ void SphereTriangulation::triangulate() {
         int v1 = triangles_south[idx * 3 + 1];
         int v2 = triangles_south[idx * 3 + 2];
 
-        triangles.push_back(v0);
-        triangles.push_back(v2);
-        triangles.push_back(v1);
-        
+        bool v0_boundary = (std::find(boundary_edges.begin(), boundary_edges.end(), v0) != boundary_edges.end());
+        bool v1_boundary = (std::find(boundary_edges.begin(), boundary_edges.end(), v1) != boundary_edges.end());
+        bool v2_boundary = (std::find(boundary_edges.begin(), boundary_edges.end(), v2) != boundary_edges.end());
+
+        if (v0_boundary + v1_boundary + v2_boundary < 3) {
+            triangles.push_back(v0);
+            triangles.push_back(v2);
+            triangles.push_back(v1);
+        }
     }
 
     triangles = mesh_optimize_by_edge_flipping(
@@ -140,7 +178,7 @@ void SphereTriangulation::triangulate() {
         3,
         std::span<const int>(triangles.data(), triangles.size()),
         100);
-    
+
 }
 
 void SphereTriangulation::getTriangleIndices(std::span<int> results) const {

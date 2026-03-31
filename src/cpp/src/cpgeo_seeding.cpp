@@ -68,7 +68,7 @@ static std::vector<int> insert_delete_points(
     double seed_size
 ){
 
-    const int MAX_ITER = 5; // safety guard to avoid pathological infinite loops
+    const int MAX_ITER = 10; // safety guard to avoid pathological infinite loops
     int iter_count = 0;
     std::vector<int> faces;
 
@@ -200,7 +200,7 @@ static std::vector<int> insert_delete_points(
     auto r = map_points_batch(vertices_sphere, tree, control_points);
 
     // refine mesh by edge flipping
-    faces = mesh_optimize_by_edge_flipping(r, 3, faces, 100);
+    faces = mesh_optimize_by_edge_flipping(r, 3, faces, 10000);
     
     return faces;
 }
@@ -616,7 +616,7 @@ static std::vector<double> newton_step(
     
     for (int ptidx = 0; ptidx < num_points; ptidx++) {
         double z = vertices_sphere[ptidx * 3 + 2];
-        bool keep = north_pole ? (z < 0.5) : (z > -0.5);
+        bool keep = north_pole ? (z < 0.7) : (z > -0.7);
         point_keep[ptidx] = keep;
         if (keep) num_keep_points++;
     }
@@ -686,9 +686,52 @@ static std::vector<double> newton_step(
         rhs[i] = -Ldu_filtered[i];
     }
     
+    // Diagonal Preconditioning (Symmetric Scaling: Jacobi Preconditioner approach)
+    // Transform A x = b  ->  (S A S) (S^-1 x) = S b, where S = D^-1/2
+    // Let A' = S A S, x' = S^-1 x, b' = S b.  Solve A' x' = b'. Recover x = S x'.
+    std::vector<double> diag_scaling(num_keep_variables, 1.0);
+    bool use_preconditioning = true;
+
+    for (int i = 0; i < num_keep_variables; ++i) {
+        double diag_val = 0.0;
+        // Find diagonal element A_ii
+        for (int k = csr_row_ptr[i]; k < csr_row_ptr[i+1]; ++k) {
+            if (csr_col_idx[k] == i) {
+                diag_val = csr_values[k];
+                break;
+            }
+        }
+        
+        // If diagonal is non-positive, preconditioning is invalid for this matrix structure
+        diag_scaling[i] = 1.0 / std::sqrt(std::abs(diag_val));
+    }
+
+    if (use_preconditioning) {
+        // Apply scaling to Matrix A
+        #pragma omp parallel for
+        for (int i = 0; i < num_keep_variables; ++i) {
+            for (int k = csr_row_ptr[i]; k < csr_row_ptr[i+1]; ++k) {
+                int col = csr_col_idx[k];
+                csr_values[k] *= diag_scaling[i] * diag_scaling[col];
+            }
+        }
+
+        // Apply scaling to RHS b
+        for (int i = 0; i < num_keep_variables; ++i) {
+            rhs[i] *= diag_scaling[i];
+        }
+    }
+
     // Solve Hessian * delta_uv = -gradient using conjugate gradient
     std::vector<double> delta_uv_filtered;
-    bool converged = conjugate_gradient(csr_row_ptr, csr_col_idx, csr_values, rhs, delta_uv_filtered, 10000, 1e-5);
+    bool converged = conjugate_gradient(csr_row_ptr, csr_col_idx, csr_values, rhs, delta_uv_filtered, 10000, 1e-6);
+
+    if (use_preconditioning) {
+        // Recover original variables: x = S * x'
+        for (int i = 0; i < num_keep_variables; ++i) {
+            delta_uv_filtered[i] *= diag_scaling[i];
+        }
+    }
 
     
     
@@ -753,7 +796,7 @@ void vertice_smoothing(
 	auto knots = tree.get_knots();
 	auto thresholds = tree.get_thresholds();
 
-    const int max_newton_iters = 50;
+    const int max_newton_iters = 500;
     const double loss_tol = 1e-6;
     const double grad_tol = 1e-2;
     
@@ -762,10 +805,24 @@ void vertice_smoothing(
     // Initial volume
     double initial_volume = evaluate_volume(std::span<const double>(vertices_sphere.data(), vertices_sphere.size()), faces);
     
+    bool north_converged = false;
+    bool south_converged = false;
+
     for(int loop = 0; loop < max_newton_iters; loop++){
         bool north_pole = loop % 2 == 0;
 
-        
+        if (north_converged && south_converged) {
+            std::cout << "  - Both pole regions converged, stopping." << std::endl;
+            break;
+        }
+        if(north_pole && north_converged){
+            std::cout << "  - North pole region already converged, skipping." << std::endl;
+            continue;
+        }
+        if(!north_pole && south_converged){
+            std::cout << "  - South pole region already converged, skipping." << std::endl;
+            continue;
+        }
         
         // Compute newton step (returns delta in UV space)
         auto delta_uv = newton_step(vertices_sphere, tree, control_points, std::span<const int>(edges.data(), edges.size()), north_pole);
@@ -787,7 +844,9 @@ void vertice_smoothing(
         
         if (grad_norm < grad_tol) {
             std::cout << " -> Converged (small gradient)" << std::endl;
-            break;
+            if (north_pole) north_converged = true;
+            else south_converged = true;
+            continue;
         }
         
         // Backtracking line search
@@ -837,9 +896,15 @@ std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
         vertice_smoothing(vertices_sphere, faces, control_points, tree);
 
         // refine mesh by edge flipping
-        auto faces_new = insert_delete_points(vertices_sphere, control_points, tree, seed_size);
+        r = map_points_batch(vertices_sphere, tree, control_points);
+        auto faces_new = mesh_optimize_by_edge_flipping(
+            r,
+            3,
+            faces,
+            10000
+        );
 
-
+        // check for changes
         bool any_change = false;
         for (int i = 0; i < static_cast<int>(faces.size()); i++) {
             if (faces[i] != faces_new[i]) {
@@ -853,6 +918,26 @@ std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
         }
         faces = std::move(faces_new);
     }
+
+    // // final insert/delete points
+    // faces = insert_delete_points(vertices_sphere, control_points, tree, seed_size);
+
+    // // final vertex smoothing
+    // vertice_smoothing(vertices_sphere, faces, control_points, tree);
+
+    // auto tri = SphereTriangulation(vertices_sphere);
+    // tri.triangulate();
+    // faces.clear();
+    // faces.resize(tri.size() * 3);
+    // tri.getTriangleIndices(faces);
+
+    // r = map_points_batch(vertices_sphere, tree, control_points);
+    // faces = mesh_optimize_by_edge_flipping(
+    //     r,
+    //     3,
+    //     faces,
+    //     10000
+    // );
 
     return {vertices_sphere, faces};
 }

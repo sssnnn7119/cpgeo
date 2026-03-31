@@ -1412,8 +1412,16 @@ namespace TestRefineMesh{
 
         std::cout << "SpaceTree created successfully (" << num_knots << " knots)" << std::endl;
 
+        int num1, num2;
+        cpgeo_uniformly_mesh_compute(knots.data(), knots.size() / 3,
+                                     controlpoints.data(), controlpoints.size() / 3,
+                                     tree,
+			1.0, 0, &num1, &num2);
 
-		auto [new_knots, new_faces] = cpgeo::uniformlyMesh(knots, controlpoints, *(cpgeo::SpaceTree*)tree, 1.0, 10);
+		std::vector<double> new_knots(num1 * 3);
+		std::vector<int> new_faces(num2 * 3);
+
+		cpgeo_uniformly_mesh_get(new_knots.data(), new_faces.data());
 
         auto r_new = cpgeo::map_points_batch(new_knots, *(cpgeo::SpaceTree*)tree, controlpoints);
 
@@ -1505,8 +1513,8 @@ int main() {
 	//TestEdgeRefinement::test_flip();
      
     //TestRefineMesh::test_remesh_build_spacetree();
-    TestTriangulationPlain::test_sphere();
-    //TestTriangulationPlain::test_sphere_simple();
+    //TestTriangulationPlain::test_sphere();
+    TestTriangulationPlain::test_sphere_simple();
 
 
     return 0;

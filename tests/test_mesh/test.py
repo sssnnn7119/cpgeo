@@ -124,9 +124,13 @@ if __name__ == "__main__":
     # surf = cpgeo.CPGEO(control_points=cps, cp_faces=faces)
     # surf.initialize()
 
-    grids = np.loadtxt('tests/test_mesh/data/data1.txt').reshape((-1, 3))
-    cps = np.loadtxt('tests/test_mesh/data/data1_cp.txt')
+    grids = np.loadtxt('tests/test_mesh/data/data2.txt')
+    cps = np.loadtxt('tests/test_mesh/data/data2_cp.txt')
     mesh = cpgeo.capi.get_sphere_triangulation(grids)
+
+    edges = cpgeo.capi.get_mesh_edges(mesh)
+
+    boundary = cpgeo.capi.extract_boundary_loops(mesh)
 
     mesh2 = cpgeo.capi.optimize_mesh_by_edge_flipping(cps, mesh)
 
@@ -152,9 +156,17 @@ if __name__ == "__main__":
     quality_ok = check_mesh_quality(mesh2, cps, min_angle_deg=0.1, verbose=True)
 
     try:
-        mesh = pv.PolyData(cps, np.hstack([np.full((mesh2.shape[0], 1), 3), mesh2]))
+        pmesh = pv.PolyData(cps, np.hstack([np.full((mesh2.shape[0], 1), 3), mesh2]))
         plotter = pv.Plotter()
-        plotter.add_mesh(mesh, color='lightgreen', show_edges=True, opacity=1)
+        plotter.add_mesh(pmesh, color='lightgreen', show_edges=True, opacity=1)        
+        def callback(picked_point, picker):
+            point_id = picker.GetPointId()
+            if point_id < 0: return
+            point = pmesh.points[point_id]
+            print(f"Node Index: {point_id}, Coordinates: {point}")
+            plotter.add_point_labels([point], [f"ID: {point_id}"], point_size=20, font_size=18, name="picked_label", always_visible=True)
+
+        plotter.enable_point_picking(callback=callback, show_message=True, use_picker=True, show_point=True, color='red', picker='point')
         plotter.show()
         
     except Exception as e:

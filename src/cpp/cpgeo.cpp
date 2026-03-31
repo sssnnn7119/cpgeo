@@ -480,7 +480,7 @@ CPGEO_API int cpgeo_uniformly_mesh_compute(
     int* out_num_vertices,
     int* out_num_faces
 ) {
-    if (!init_vertices_sphere || !control_points || !tree || !out_num_vertices || !out_num_faces || num_vertices <= 0 || num_control_points <= 0 || max_iterations <= 0) {
+    if (!init_vertices_sphere || !control_points || !tree || !out_num_vertices || !out_num_faces || num_vertices <= 0 || num_control_points <= 0 || max_iterations < 0) {
         return -1;
     }
 

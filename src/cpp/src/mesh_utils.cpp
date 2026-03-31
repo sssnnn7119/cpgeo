@@ -36,32 +36,59 @@ std::vector<std::vector<int>> extractBoundaryLoops(const std::span<const int> tr
     
     // Extract all boundary loops
     std::vector<std::vector<int>> loops;
-    std::unordered_set<int> visited;
+    std::unordered_set<int> global_visited;
     
     for (const auto& [start_vertex, neighbors] : boundary_adj) {
-        if (visited.count(start_vertex)) {
+        if (global_visited.count(start_vertex)) {
             continue;
         }
         
         // Trace a loop starting from this vertex
         std::vector<int> loop;
+        std::unordered_set<int> loop_visited;  // Track visited in this loop
         int current = start_vertex;
         int prev = -1;
         
-        while (true) {
+        // Safety limit to prevent infinite loops
+        const int max_iterations = static_cast<int>(boundary_adj.size() * 200);
+        int iteration = 0;
+        
+        while (iteration < max_iterations) {
+            ++iteration;
+            
+            // Check if we've already visited this vertex in this loop
+            if (loop_visited.count(current)) {
+                // We've looped back, but not to start - this is an error, break out
+                break;
+            }
+            
             loop.push_back(current);
-            visited.insert(current);
+            loop_visited.insert(current);
+            global_visited.insert(current);
             
             // Find next vertex (not the one we came from)
+            auto it = boundary_adj.find(current);
+            if (it == boundary_adj.end()) {
+                // No neighbors found - shouldn't happen for boundary vertices
+                break;
+            }
+            
             int next = -1;
-            for (int neighbor : boundary_adj[current]) {
+            for (int neighbor : it->second) {
                 if (neighbor != prev) {
                     next = neighbor;
                     break;
                 }
             }
             
-            if (next == -1 || next == start_vertex) {
+            // Check termination conditions
+            if (next == -1) {
+                // Dead end - no valid next vertex
+                break;
+            }
+            
+            if (next == start_vertex) {
+                // Successfully completed the loop
                 break;
             }
             

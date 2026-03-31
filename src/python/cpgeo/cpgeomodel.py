@@ -35,6 +35,18 @@ class CPGEO:
         self._space_tree = None
         """the space tree for fast querying"""
 
+    def __getstate__(self):
+        """Custom pickling to exclude C pointers."""
+        state = self.__dict__.copy()
+        state['_space_tree'] = None
+        return state
+
+    def __setstate__(self, state):
+        """Custom unpickling to reset C pointers."""
+        self.__dict__.update(state)
+        self._space_tree = None
+        self.initialize()
+
     def initialize(self):
         """Initialize the knot points and thresholds based on the control points."""
         
@@ -57,6 +69,7 @@ class CPGEO:
         Returns:
             np.ndarray: The weights of control points for each query point, shape (N, V).
         """
+        
         indices_cps, indices_pts = capi.get_space_tree_query(self._space_tree, query_points)
 
         points_plane = self.reference_to_curvilinear(query_points)
@@ -207,103 +220,9 @@ class CPGEO:
             max_iterations
         )
 
+
+
         return new_vertices, new_faces    
-    
-    def _post_process(self, initial_points: np.ndarray = None):
-        """
-        Post-process the CPGEO model after remeshing to update control points for error minimization.
-        """
-
-        num_points = self.control_points.shape[0]
-
-        # post process
-
-        indices, rdot = self.get_weights2(self._knots, derivative=0)
-        r = self.map3(self._knots)
-
-        alpha = 1.0
-        loss0 = ((r - initial_points)**2).sum()
-        loss1 = ((self.control_points - initial_points)**2).sum()
-        loss = loss0 + loss1 * alpha
-        print()
-        print('before refine P0: loss = %e' % (loss))
-
-        ldr = 2 * (r - initial_points)
-        ldr_2_values = 2 * torch.ones([3, num_points]).flatten()
-        ldr_2_indices = torch.stack([
-            torch.arange(0, 3).reshape([3, 1]).repeat(1, num_points),
-            torch.arange(0, num_points).reshape([1, num_points]).repeat(3, 1),
-            torch.arange(0, 3).reshape([3, 1]).repeat(1, num_points),
-            torch.arange(0, num_points).reshape([1, num_points]).repeat(3, 1),
-        ],
-                                    dim=0).reshape([4, -1])
-        ldr_2 = torch.sparse_coo_tensor(ldr_2_indices,
-                                        ldr_2_values,
-                                        size=[3, num_points, 3, num_points])
-
-        l0dot = _sparse_methods._from_Adr_to_Adot(indices=indices,
-                                                  Adr=ldr,
-                                                  rdot=rdot,
-                                                  numel_output=num_points)
-
-        l1dot = 2 * (self.control_points - initial_points)
-
-        index_boundary = torch.tensor(sum([
-            self.boundary_points_index[i].tolist()
-            for i in range(len(self.boundary_points_index))
-        ], []))
-        index_boundary2 = index_boundary.clone()
-        
-        for i in range(5):
-            index_boundary2 = self.cp_elements[torch.where(torch.isin(self.cp_elements, index_boundary2).sum(dim=1) > 0)[0]].unique()
-
-        index_no_boundary = torch.tensor(
-            list(set(range(num_points)) - set(index_boundary2.tolist())))
-
-        ldot = l0dot + l1dot * alpha
-
-        ldot = ldot[:, index_no_boundary]
-
-        l0dot_2 = _sparse_methods._from_Sdr_to_Sdot_2(indices=indices,
-                                                      Sdr_2=ldr_2,
-                                                      rdot=rdot)
-
-        l1dot_2 = ldr_2
-
-        ldot_2 = l0dot_2 + l1dot_2 * alpha
-
-        ldot_2 = ldot_2.index_select(1, index_no_boundary).index_select(
-            3, index_no_boundary)
-
-        ldot_2 = _sparse_methods._sparse_reshape(
-            ldot_2, 2 * [3 * ldot_2.shape[1]]).coalesce()
-
-        dP = _sparse_methods._conjugate_gradient(ldot_2.indices(),
-                                                 ldot_2.values(),
-                                                 -ldot.flatten(),
-                                                 tol=1e-7,
-                                                 max_iter=30000)
-        dP.view(-1)[dP.view(-1).isnan()] = 0
-        dP = dP.reshape([3, -1])
-
-        self.cp_vertices[:,
-                         index_no_boundary] = self.cp_vertices[:,
-                                                               index_no_boundary] + dP
-
-        r1 = self.map(self.knots)
-
-        epsilon = torch.zeros([3, 3, 3])
-        epsilon[0, 1, 2] = epsilon[1, 2, 0] = epsilon[2, 0, 1] = 1
-        epsilon[0, 2, 1] = epsilon[2, 1, 0] = epsilon[1, 0, 2] = -1
-
-        loss0_new = ((r1 - initial_points)**2).sum()
-        loss1_new = ((self.cp_vertices - initial_points)**2).sum() * alpha
-
-        print('after refine P0: loss = %e' % (loss0_new + loss1_new * alpha))
-
-        self.cp_elements = _mesh_methods.refine_triangular_mesh(
-        self.cp_vertices.T, self.cp_elements)
-
 
 
     def refine_surface(self, seed_size: float = 1.0, max_iterations: int = 10):
@@ -330,6 +249,15 @@ class CPGEO:
 
         plotter = pv.Plotter()
         plotter.add_mesh(mesh, color='lightblue', show_edges=True, opacity=1.0)
+
+        def callback(picked_point, picker):
+            point_id = picker.GetPointId()
+            if point_id < 0: return
+            point = mesh.points[point_id]
+            print(f"Node Index: {point_id}, Coordinates: {point}")
+            plotter.add_point_labels([point], [f"ID: {point_id}"], point_size=20, font_size=18, name="picked_label", always_visible=True)
+
+        plotter.enable_point_picking(callback=callback, show_message=True, use_picker=True, show_point=True, color='red', picker='point')
         plotter.show()
 
     def show_knots(self):
@@ -340,6 +268,14 @@ class CPGEO:
 
         plotter = pv.Plotter()
         plotter.add_mesh(mesh, color='lightblue', show_edges=True, opacity=1.0)
+        def callback(picked_point, picker):
+            point_id = picker.GetPointId()
+            if point_id < 0: return
+            point = mesh.points[point_id]
+            print(f"Node Index: {point_id}, Coordinates: {point}")
+            plotter.add_point_labels([point], [f"ID: {point_id}"], point_size=20, font_size=18, name="picked_label", always_visible=True)
+
+        plotter.enable_point_picking(callback=callback, show_message=True, use_picker=True, show_point=True, color='red', picker='point')
         plotter.show()
 
     def show_control_points(self):
@@ -349,7 +285,15 @@ class CPGEO:
         mesh = pv.PolyData(r, np.hstack([np.full((coo.shape[0], 1), 3), coo]))
 
         plotter = pv.Plotter()
-        plotter.add_mesh(mesh, color='lightblue', show_edges=True, opacity=1.0)
+        plotter.add_mesh(mesh, color='lightblue', show_edges=True, opacity=1.0)        
+        def callback(picked_point, picker):
+            point_id = picker.GetPointId()
+            if point_id < 0: return
+            point = mesh.points[point_id]
+            print(f"Node Index: {point_id}, Coordinates: {point}")
+            plotter.add_point_labels([point], [f"ID: {point_id}"], point_size=20, font_size=18, name="picked_label", always_visible=True)
+
+        plotter.enable_point_picking(callback=callback, show_message=True, use_picker=True, show_point=True, color='red', picker='point')
         plotter.show()
 
     def curvilinear_to_reference(self, curvilinear_points: np.ndarray,
@@ -561,6 +505,16 @@ class CPGEO:
         # finally get the knots
         knots3 = self.curvilinear_to_reference(knots_cur)[0]
         knots3 = knots3[:, [1,2,0]]
+
+        # make sure all faces are outward
+        face_normals = np.cross(
+            knots3[faces[:, 1]] - knots3[faces[:, 0]],
+            knots3[faces[:, 2]] - knots3[faces[:, 0]])
+        face_centers = (knots3[faces[:, 0]] + knots3[faces[:, 1]] + knots3[faces[:, 2]]) / 3
+        dot_products = np.einsum('fi,fi->f', face_normals, face_centers)
+        index_flip = np.where(dot_products < 0)[0]
+        if index_flip.shape[0] > 0:
+            faces[index_flip, [1, 2]] = faces[index_flip, [2, 1]]
         
         return knots3
 

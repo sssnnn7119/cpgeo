@@ -1,6 +1,6 @@
 [project]
 name = "cpgeo"
-version = "1.0.3"
+version = "1.0.4"
 description = "A library for control points-based surface."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -24,11 +24,13 @@ where = ["src/python"]
 
 [tool.setuptools.package-data]
 # 将 DLL 文件打包进去
-bspmap = [
+cpgeo = [
     "*.dll",           # Windows
     "*.so",            # Linux
     "*.dylib",         # macOS
     "bin/*.dll",
+    "bin/*.so",
+    "bin/*.dylib",
     "lib/*.so",
     "lib/*.dylib",
 ]
