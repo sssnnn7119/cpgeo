@@ -22,13 +22,8 @@ def timer(name: str, iterations: int = 10):
 # cps = data['control_points'].T
 # faces = data['mesh_elements']
 
-import pyvista as pv
-obj = pv.read('tests/mesh_uniforming_loop_0_step1.obj')
-cps = obj.points
-faces = obj.faces.reshape((-1, 4))[:, 1:4].astype(np.int32)
-edges = cpgeo.capi.get_mesh_edges(faces)
 
-surf = cpgeo.CPGEO(control_points=cps, cp_faces=faces)
+surf = cpgeo.CPGEO.load('tests/test_remesh/data/Surface-1_iter-58.npz')
 
 t0 = time.time()
 surf.initialize()
@@ -43,13 +38,13 @@ surf.initialize()
 
 # Run uniform remeshing and visualize the updated surface
 with timer("Uniform remeshing", iterations=1):
-    new_vertices, new_faces = surf.uniformly_mesh(seed_size=1.0, max_iterations=10, update_self=False)
+    new_vertices, new_faces = surf.uniformly_mesh(seed_size=1.0, max_iterations=10)
 
 print(f"  New vertices: {new_vertices.shape}, New faces: {new_faces.shape}")
 
 # Map the new vertices via the model (to physical/control-point space)
 with timer("Mapping new vertices", iterations=1):
-    mapped_new = surf.map3(new_vertices)
+    mapped_new = surf.map3(new_vertices, derivative=2)
 
 print(f"  Mapped vertices: {mapped_new.shape}")
 

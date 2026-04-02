@@ -144,7 +144,7 @@ class CPGEO:
             np.ndarray: The mapped points in reference coordinates, shape (N, 3).
         """
 
-        results = self.get_weights2(points_plane)
+        results = self.get_weights2(points_plane, derivative=derivative)
         indices_cps, indices_pts, w = results[:3]
         r = capi.get_mapped_points(indices_cps, indices_pts, w, self._control_points, points_plane.shape[0])
 
@@ -163,10 +163,10 @@ class CPGEO:
         if derivative == 2:
             wdu2 = results[4]
             rdu2 = np.stack([
-                capi.get_mapped_points(indices_cps, indices_pts, wdu2[0], self._control_points, points_plane.shape[0]),
-                capi.get_mapped_points(indices_cps, indices_pts, wdu2[1], self._control_points, points_plane.shape[0]),
-                capi.get_mapped_points(indices_cps, indices_pts, wdu2[2], self._control_points, points_plane.shape[0]),
-                capi.get_mapped_points(indices_cps, indices_pts, wdu2[3], self._control_points, points_plane.shape[0]),
+                capi.get_mapped_points(indices_cps, indices_pts, wdu2[0,0], self._control_points, points_plane.shape[0]),
+                capi.get_mapped_points(indices_cps, indices_pts, wdu2[0,1], self._control_points, points_plane.shape[0]),
+                capi.get_mapped_points(indices_cps, indices_pts, wdu2[1,0], self._control_points, points_plane.shape[0]),
+                capi.get_mapped_points(indices_cps, indices_pts, wdu2[1,1], self._control_points, points_plane.shape[0]),
             ], axis=-1).reshape([-1, 3, 2, 2])
 
             result.append(rdu2)
