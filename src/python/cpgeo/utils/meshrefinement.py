@@ -1,8 +1,8 @@
 import numpy as np
-import scipy
-from . import capi
 import scipy.sparse as sp
+from .. import capi
 import pypardiso
+
 def mesh_regulation_2D(nodes: np.ndarray,
                                       elements: np.ndarray,
                                       index_nodes: np.ndarray,

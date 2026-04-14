@@ -220,7 +220,7 @@ class CPGEO:
             max_iterations
         )
 
-
+        new_faces = new_faces[:, [0, 2, 1]]
 
         return new_vertices, new_faces    
 
@@ -514,7 +514,7 @@ class CPGEO:
         dot_products = np.einsum('fi,fi->f', face_normals, face_centers)
         index_flip = np.where(dot_products < 0)[0]
         if index_flip.shape[0] > 0:
-            faces[index_flip, [1, 2]] = faces[index_flip, [2, 1]]
+            faces[index_flip, 1], faces[index_flip, 2] = faces[index_flip, 2], faces[index_flip, 1]
         
         return knots3
 
