@@ -22,6 +22,32 @@ def _reflection_matrix_from_normal(n: np.ndarray) -> np.ndarray:
     return np.eye(3, dtype=np.float64) - 2.0 * np.outer(n, n)
 
 
+def _compute_axial_match_indices(vertices: np.ndarray,
+                                 plane: str,
+                                 plane_offset: float) -> np.ndarray:
+    n, axis_id = _parse_plane(plane)
+    d = float(plane_offset)
+
+    shift = np.zeros(3, dtype=np.float64)
+    shift[axis_id] = d
+    r = _reflection_matrix_from_normal(n)
+
+    v = np.asarray(vertices, dtype=np.float64)
+    v_ref = ((v - shift[None, :]) @ r.T) + shift[None, :]
+
+    try:
+        from scipy.spatial import cKDTree
+        tree = cKDTree(v)
+        _, idx = tree.query(v_ref, k=1)
+    except Exception:
+        diff = v_ref[:, None, :] - v[None, :, :]
+        dist2 = np.sum(diff * diff, axis=2)
+        idx = np.argmin(dist2, axis=1)
+
+    ids = np.arange(v.shape[0], dtype=np.int64)
+    return np.stack([ids, idx.astype(np.int64)], axis=1)
+
+
 def _clip_polygon_halfspace(poly: np.ndarray,
                             n: np.ndarray,
                             d: float,
@@ -130,7 +156,8 @@ def enforce_axial_symmetry(vertices: np.ndarray,
                            plane: str = "yz",
                            plane_offset: float = 0.0,
                            keep_positive: bool = True,
-                           tol: float = 1e-8):
+                           tol: float = 1e-8,
+                           return_match: bool = False):
     """
     Enforce strict planar symmetry by: keep one half-space -> mirror -> rebuild faces.
 
@@ -143,7 +170,9 @@ def enforce_axial_symmetry(vertices: np.ndarray,
         tol: Cut and welding tolerance.
 
     Returns:
-        (new_vertices, new_faces)
+        (new_vertices, new_faces) when return_match is False.
+        (new_vertices, new_faces, match_indices) when return_match is True,
+        where match_indices has shape (V, 2).
     """
     v = np.asarray(vertices, dtype=np.float64)
     f = np.asarray(faces, dtype=np.int64)
@@ -173,7 +202,11 @@ def enforce_axial_symmetry(vertices: np.ndarray,
 
     verts_all, faces_all = _weld_vertices(verts_all, faces_all, weld_tol=tol)
 
-    return verts_all, faces_all
+    if not return_match:
+        return verts_all, faces_all
+
+    match = _compute_axial_match_indices(verts_all, plane=plane, plane_offset=plane_offset)
+    return verts_all, faces_all, match
 
 
 

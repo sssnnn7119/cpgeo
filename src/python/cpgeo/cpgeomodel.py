@@ -35,6 +35,9 @@ class CPGEO:
         self._space_tree = None
         """the space tree for fast querying"""
 
+        self._symmetry_points_match: np.ndarray = None
+        """the matched control points for each symmetry point, shape (V, 2) for axial symmetry, shape (V, n) for Cn rotational symmetry"""
+
     def __getstate__(self):
         """Custom pickling to exclude C pointers."""
         state = self.__dict__.copy()
@@ -238,6 +241,61 @@ class CPGEO:
         # new_cps = self._post_process()
 
         # self._control_points = new_cps
+
+    def reconstruct_symmetry(self,
+                             mode: str = "axial",
+                             plane: str = "yz",
+                             plane_offset: float = 0.0,
+                             keep_positive: bool = True,
+                             periods: int = 2,
+                             tol: float = 1e-8,
+                             inplace: bool = True):
+        """
+        Reconstruct control mesh with enforced symmetry and store point correspondence.
+
+        Args:
+            mode: "axial" or "rotational".
+            plane: Symmetry plane for axial mode.
+            plane_offset: Plane offset for axial mode.
+            keep_positive: Keep positive side for axial mode.
+            periods: Cn periods for rotational mode.
+            tol: Numerical tolerance used by utils.
+            inplace: Update current model when True.
+
+        Returns:
+            (new_vertices, new_faces, symmetry_points_match)
+        """
+        key = mode.lower().strip()
+        if key in ("axial", "axis", "planar"):
+            new_vertices, new_faces, match = utils.enforce_axial_symmetry(
+                self._control_points,
+                self._cp_faces,
+                plane=plane,
+                plane_offset=plane_offset,
+                keep_positive=keep_positive,
+                tol=tol,
+                return_match=True,
+            )
+        elif key in ("rotational", "rotation", "cn"):
+            new_vertices, new_faces, match = utils.enforce_rotational_symmetry_z(
+                self._control_points,
+                self._cp_faces,
+                periods=periods,
+                tol=tol,
+                return_match=True,
+            )
+        else:
+            raise ValueError("mode must be one of {'axial', 'rotational'}.")
+
+        # Always keep the latest symmetry correspondence on the model.
+        self._symmetry_points_match = match
+
+        if inplace:
+            self._control_points = new_vertices
+            self._cp_faces = new_faces
+            self.initialize()
+
+        return new_vertices, new_faces, match
 
         
 
@@ -532,6 +590,10 @@ class CPGEO:
     @property
     def control_points(self) -> np.ndarray:
         return self._control_points
+
+    @property
+    def symmetry_points_match(self) -> np.ndarray:
+        return self._symmetry_points_match
     
     @control_points.setter
     def control_points(self, points: np.ndarray):

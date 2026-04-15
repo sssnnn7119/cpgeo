@@ -11,6 +11,33 @@ def _rotation_matrix_z(angle: float) -> np.ndarray:
                      [0.0, 0.0, 1.0]], dtype=np.float64)
 
 
+def _compute_rotational_match_indices(vertices: np.ndarray,
+                                      periods: int) -> np.ndarray:
+    v = np.asarray(vertices, dtype=np.float64)
+    n = v.shape[0]
+    alpha = 2.0 * np.pi / float(periods)
+
+    try:
+        from scipy.spatial import cKDTree
+        tree = cKDTree(v)
+        cols = []
+        for k in range(periods):
+            r = _rotation_matrix_z(-alpha * float(k))
+            q = v @ r.T
+            _, idx = tree.query(q, k=1)
+            cols.append(idx.astype(np.int64))
+        return np.stack(cols, axis=1)
+    except Exception:
+        cols = []
+        for k in range(periods):
+            r = _rotation_matrix_z(-alpha * float(k))
+            q = v @ r.T
+            diff = q[:, None, :] - v[None, :, :]
+            dist2 = np.sum(diff * diff, axis=2)
+            cols.append(np.argmin(dist2, axis=1).astype(np.int64))
+        return np.stack(cols, axis=1)
+
+
 def _mesh_topology_stats(faces: np.ndarray):
     if faces.shape[0] == 0:
         return 0, 0
@@ -131,7 +158,8 @@ def _enforce_rotational_symmetry_z_vertex_projection(vertices: np.ndarray,
 def enforce_rotational_symmetry_z(vertices: np.ndarray,
                                   faces: np.ndarray,
                                   periods: int,
-                                  tol: float = 1e-8):
+                                  tol: float = 1e-8,
+                                  return_match: bool = False):
     """
     Enforce Cn rotational symmetry around z-axis by sector clipping + replication.
 
@@ -142,7 +170,9 @@ def enforce_rotational_symmetry_z(vertices: np.ndarray,
         tol: Clipping and welding tolerance.
 
     Returns:
-        (new_vertices, new_faces)
+        (new_vertices, new_faces) when return_match is False.
+        (new_vertices, new_faces, match_indices) when return_match is True,
+        where match_indices has shape (V, periods).
     """
     v = np.asarray(vertices, dtype=np.float64)
     f = np.asarray(faces, dtype=np.int64)
@@ -181,7 +211,10 @@ def enforce_rotational_symmetry_z(vertices: np.ndarray,
     boundary_edges, nonmanifold_edges = _mesh_topology_stats(faces_all)
     n_comp = _vertex_component_count(verts_all, faces_all)
     if boundary_edges == 0 and nonmanifold_edges == 0 and n_comp == 1:
-        return verts_all, faces_all
+        if not return_match:
+            return verts_all, faces_all
+        match = _compute_rotational_match_indices(verts_all, periods=periods)
+        return verts_all, faces_all, match
 
     # Fallback keeps original topology and enforces periodic geometry in vertex positions.
     v_fb, f_fb = _enforce_rotational_symmetry_z_vertex_projection(v, f, periods)
@@ -193,4 +226,7 @@ def enforce_rotational_symmetry_z(vertices: np.ndarray,
             "Try adjusting tolerance or input quality."
         )
 
-    return v_fb, f_fb
+    if not return_match:
+        return v_fb, f_fb
+    match = _compute_rotational_match_indices(v_fb, periods=periods)
+    return v_fb, f_fb, match

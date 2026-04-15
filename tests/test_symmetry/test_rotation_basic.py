@@ -1,16 +1,15 @@
-"""
-Test mesh partition and boundary extraction functionality.
-"""
+"""Rotation symmetry regression tests on sphere and weird closed shapes."""
 
-from pathlib import Path
-import numpy as np
 import sys
-sys.path.insert(0, 'src/python')
-
-import cpgeo
-from cpgeo import utils
-import os
 import time
+import numpy as np
+from numpy.__config__ import show
+
+sys.path.insert(0, "src/python")
+
+from cpgeo import utils
+
+
 class Timer:
     def __init__(self, name="Operation"):
         self.name = name
@@ -221,58 +220,47 @@ def show_surf(vertices: np.ndarray, faces: np.ndarray):
     surf.plot(show_edges=True)
 
 
-
-
 if __name__ == "__main__":
-    
-    # data = np.load('tests/testdata.npz')
+    periods = 4
+    v_sphere, faces = create_uv_sphere(n_lat=40, n_lon=120, radius=1.0)
+    shape_names = ["sphere", "spiky", "peanut", "trefoil_like", "ruffled"]
 
-    # cps = data['control_points'].T
-    # faces = data['mesh_elements']
-    # surf = cpgeo.CPGEO(control_points=cps, cp_faces=faces)
-    # surf.initialize()
-    filepath = Path(__file__).parent / 'data' / 'rotation.npz'
-    surf = cpgeo.CPGEO.load(filepath)
-    print(os.getpid())
-    
+    failures = []
+    for name in shape_names:
+        print("\n" + "=" * 70)
+        print(f"Case: {name}")
+        print("=" * 70)
 
-    # np.savetxt('src/cpp/tests/control_points.txt', surf.control_points, delimiter=',')
-    # np.savetxt('src/cpp/tests/knots.txt', surf._knots, delimiter=',')
-    # np.savetxt('src/cpp/tests/cp_faces.txt', surf._cp_faces, fmt='%d', delimiter=',')
+        cp0 = v_sphere.copy() if name == "sphere" else make_weird_shape(v_sphere, name)
+        in_sym_err = cn_symmetry_error(cp0, periods=periods)
 
-    surf.initialize()
+        base_report = topology_report(cp0, faces, f"{name}_original")
+        v0 = mesh_volume(cp0, faces)
+        print(f"\n{name} original volume: {v0:.10f}")
+        print(f"{name} input C{periods} sym err: {in_sym_err:.3e}")
 
-    # surf.show_control_points()
+        show_surf(cp0, faces)
+        with Timer(f"{name} rotational symmetry C{periods}"):
+            v_cn, f_cn = utils.enforce_rotational_symmetry_z(cp0, faces, periods=periods, tol=1e-8)
+            cn_report = topology_report(v_cn, f_cn, f"{name}_rotational_c{periods}")
+            v_after = mesh_volume(v_cn, f_cn)
+            sym_err = cn_symmetry_error(v_cn, periods=periods)
+            n_comp = mesh_component_count(v_cn, f_cn)
+            rel_err = abs(v_after - v0) / max(abs(v0), 1e-12)
+            print(f"\n{name} C{periods} volume:      {v_after:.10f}")
+            print(f"{name} volume rel err: {rel_err:.3e}")
+            print(f"{name} C{periods} sym max err: {sym_err:.3e}")
+            print(f"{name} connected components: {n_comp}")
+            show_surf(v_cn, f_cn)
+        if not base_report["is_closed_manifold"]:
+            failures.append(f"{name}: original is not closed manifold")
+        if not cn_report["is_closed_manifold"]:
+            failures.append(f"{name}: C{periods} output is not closed manifold")
+        if n_comp != 1:
+            failures.append(f"{name}: output component count is {n_comp}, expected 1")
 
-    cp0 = surf.control_points.copy()
-    faces = surf._cp_faces.copy()
-    name = "input"
-    periods = 3
-
-    base_report = topology_report(cp0, faces, f"{name}_original")
-    v0 = mesh_volume(cp0, faces)
-    print(f"\n{name} original volume: {v0:.10f}")
-    print(f"{name} input C{periods}")
-
-    show_surf(cp0, faces)
-    with Timer(f"{name} rotational symmetry C{periods}"):
-        v_cn, f_cn = utils.enforce_rotational_symmetry_z(cp0, faces, periods=periods, tol=1e-8)
-        cn_report = topology_report(v_cn, f_cn, f"{name}_rotational_c{periods}")
-        v_after = mesh_volume(v_cn, f_cn)
-        sym_err = cn_symmetry_error(v_cn, periods=periods)
-        n_comp = mesh_component_count(v_cn, f_cn)
-        rel_err = abs(v_after - v0) / max(abs(v0), 1e-12)
-        print(f"\n{name} C{periods} volume:      {v_after:.10f}")
-        print(f"{name} volume rel err: {rel_err:.3e}")
-        print(f"{name} C{periods} sym max err: {sym_err:.3e}")
-        print(f"{name} connected components: {n_comp}")
-        show_surf(v_cn, f_cn)
-    if not base_report["is_closed_manifold"]:
-        raise ValueError(f"{name}: original is not closed manifold")
-    if not cn_report["is_closed_manifold"]:
-        raise ValueError(f"{name}: C{periods} output is not closed manifold")
-    if n_comp != 1:
-        raise ValueError(f"{name}: output component count is {n_comp}, expected 1")
-
-    
-
+    if failures:
+        print("\nFailures:")
+        for msg in failures:
+            print("-", msg)
+        raise RuntimeError(f"Some weird-shape C{periods} tests failed.")
