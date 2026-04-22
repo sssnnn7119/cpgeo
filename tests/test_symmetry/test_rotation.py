@@ -231,7 +231,7 @@ if __name__ == "__main__":
     # faces = data['mesh_elements']
     # surf = cpgeo.CPGEO(control_points=cps, cp_faces=faces)
     # surf.initialize()
-    filepath = Path(__file__).parent / 'data' / 'rotation_4.npz'
+    filepath = Path(__file__).parent / 'data' / 'rotation_6.npz'
     surf = cpgeo.CPGEO.load(filepath)
     print(os.getpid())
     

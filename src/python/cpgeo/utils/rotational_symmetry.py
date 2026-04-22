@@ -41,17 +41,19 @@ def _zipper_stitch(right_ids: np.ndarray,
     tris = []
     i = 0
     j = 0
-    nr = rid.size
-    nl = lid.size
+    nr = int(rid.size)
+    nl = int(lid.size)
 
     while i < nr - 1 or j < nl - 1:
         can_i = i < nr - 1
         can_j = j < nl - 1
 
         if can_i and can_j:
-            ci = np.linalg.norm(rpt[i + 1] - lpt[j])
-            cj = np.linalg.norm(rpt[i] - lpt[j + 1])
-            if ci <= cj:
+            # Monotonic zipper from south to north on both seam chains.
+            # Advance the side whose next normalized progress is smaller.
+            ti = float(i + 1) / max(float(nr - 1), 1.0)
+            tj = float(j + 1) / max(float(nl - 1), 1.0)
+            if ti <= tj:
                 tris.append([rid[i], rid[i + 1], lid[j]])
                 i += 1
             else:
@@ -91,20 +93,16 @@ def _order_seam_chains(right_ids: np.ndarray,
                        right_pts: np.ndarray,
                        left_ids: np.ndarray,
                        left_pts: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    # Keep the boundary-chain order from _extract_sector to avoid seam crossing.
+    # Keep seam chains in south->north direction and stitch monotonically.
     rid = right_ids.astype(np.int64)
-    rpt = right_pts
+    rpt = np.asarray(right_pts, dtype=np.float64)
     lid = left_ids.astype(np.int64)
-    lpt = left_pts
+    lpt = np.asarray(left_pts, dtype=np.float64)
 
-    d_same = np.linalg.norm(rpt[0] - lpt[0]) + np.linalg.norm(rpt[-1] - lpt[-1])
-    d_flip = np.linalg.norm(rpt[0] - lpt[-1]) + np.linalg.norm(rpt[-1] - lpt[0])
-    if d_flip < d_same:
-        lid = lid[::-1]
-        lpt = lpt[::-1]
-
-    # Use the nearest endpoint pair as seam start anchor.
-    if np.linalg.norm(rpt[0] - lpt[0]) > np.linalg.norm(rpt[0] - lpt[-1]):
+    if rpt[0, 2] > rpt[-1, 2]:
+        rid = rid[::-1]
+        rpt = rpt[::-1]
+    if lpt[0, 2] > lpt[-1, 2]:
         lid = lid[::-1]
         lpt = lpt[::-1]
 
