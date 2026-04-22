@@ -469,7 +469,9 @@ class CPGEO:
             boundary_points_index = capi.extract_boundary_loops(faces1)
             if len(boundary_points_index) == 1:
                 break
-            thre = int(thre / 3)
+            thre = int(thre / 1.5)
+            if thre == 0:
+                thre = mid_values - 1
 
         if index_half1.shape[0] < num_points / 2:
             index_half1 = np.array(

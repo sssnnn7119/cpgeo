@@ -231,7 +231,7 @@ if __name__ == "__main__":
     # faces = data['mesh_elements']
     # surf = cpgeo.CPGEO(control_points=cps, cp_faces=faces)
     # surf.initialize()
-    filepath = Path(__file__).parent / 'data' / 'rotation.npz'
+    filepath = Path(__file__).parent / 'data' / 'rotation_4.npz'
     surf = cpgeo.CPGEO.load(filepath)
     print(os.getpid())
     
@@ -254,7 +254,14 @@ if __name__ == "__main__":
     print(f"\n{name} original volume: {v0:.10f}")
     print(f"{name} input C{periods}")
 
-    show_surf(cp0, faces)
+    # show_surf(cp0, faces)
+
+    # surf.refine_surface()
+
+    # show_surf(surf.control_points, surf._cp_faces)
+
+    cp0 = surf.control_points.copy()
+    faces = surf._cp_faces.copy()
     with Timer(f"{name} rotational symmetry C{periods}"):
         v_cn, f_cn = utils.enforce_rotational_symmetry_z(cp0, faces, periods=periods, tol=1e-8)
         cn_report = topology_report(v_cn, f_cn, f"{name}_rotational_c{periods}")
@@ -266,6 +273,10 @@ if __name__ == "__main__":
         print(f"{name} volume rel err: {rel_err:.3e}")
         print(f"{name} C{periods} sym max err: {sym_err:.3e}")
         print(f"{name} connected components: {n_comp}")
+        surf.control_points = v_cn
+        surf._cp_faces = f_cn
+        surf.initialize()
+        surf.show()
         show_surf(v_cn, f_cn)
     if not base_report["is_closed_manifold"]:
         raise ValueError(f"{name}: original is not closed manifold")

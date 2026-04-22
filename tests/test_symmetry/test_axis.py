@@ -105,9 +105,11 @@ if __name__ == "__main__":
     # np.savetxt('src/cpp/tests/knots.txt', surf._knots, delimiter=',')
     # np.savetxt('src/cpp/tests/cp_faces.txt', surf._cp_faces, fmt='%d', delimiter=',')
 
-    surf.initialize()
+    # surf.initialize()
 
     # surf.show_control_points()
+    
+    surf.refine_surface()
 
     cp0 = surf.control_points.copy()
     faces = surf._cp_faces.copy()
@@ -115,14 +117,14 @@ if __name__ == "__main__":
     base_report = topology_report(cp0, faces, "original")
 
     with Timer("planar symmetry (yz-plane) + topology check"):
-        v_ax, f_ax = utils.enforce_axial_symmetry(cp0, faces, plane="yz", keep_positive=True, tol=1e-8)
+        v_ax, f_ax = utils.enforce_axial_symmetry(cp0, faces, plane="yz")
         ax_report = topology_report(v_ax, f_ax, "axial_symmetry")
         surf1 = cpgeo.CPGEO(control_points=v_ax, cp_faces=f_ax)
         surf1.initialize()
+        # surf1.show_knots()
         surf1.show_control_points()
-        # surf1.refine_surface()
-        # surf1.show_control_points()
 
+        surf1.show()
 
     if not base_report["is_closed_manifold"]:
         raise RuntimeError("Original mesh is not a closed manifold; topology baseline failed.")
