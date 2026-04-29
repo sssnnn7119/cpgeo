@@ -49,11 +49,12 @@ def _zipper_stitch(right_ids: np.ndarray,
         can_j = j < nl - 1
 
         if can_i and can_j:
-            # Monotonic zipper from south to north on both seam chains.
-            # Advance the side whose next normalized progress is smaller.
-            ti = float(i + 1) / max(float(nr - 1), 1.0)
-            tj = float(j + 1) / max(float(nl - 1), 1.0)
-            if ti <= tj:
+            # Greedy zipper: pick the shorter next cross-edge.
+            # Option 1: connect (rid[i+1] -- lid[j])
+            # Option 2: connect (rid[i] -- lid[j+1])
+            ci = float(np.linalg.norm(rpt[i + 1] - lpt[j]))
+            cj = float(np.linalg.norm(rpt[i] - lpt[j + 1]))
+            if ci <= cj:
                 tris.append([rid[i], rid[i + 1], lid[j]])
                 i += 1
             else:
