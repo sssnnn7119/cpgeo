@@ -94,7 +94,7 @@ inline static std::tuple<double, std::array<double, 3>, Tensor2D> weightFunction
     return std::tuple<double, std::array<double, 3>, Tensor2D>(weight, derivative, std::move(derivative2));
 }
 
-inline std::array<double, 2> stereographicProjection3_2(const std::span<const double, 3> cooSphere, bool north_pole) {
+std::array<double, 2> stereographicProjection3_2(const std::span<const double, 3> cooSphere, bool north_pole) {
 	std::array<double, 2> cooPlane;
 	if (north_pole) {
 		cooPlane[0] = 2 * cooSphere[0] / (1 - cooSphere[2] + 1e-15);
@@ -106,7 +106,7 @@ inline std::array<double, 2> stereographicProjection3_2(const std::span<const do
     return cooPlane;
 }
 
-inline std::array<double, 3> stereographicProjection2_3(const std::span<const double, 2> cooPlane, bool north_pole) {
+std::array<double, 3> stereographicProjection2_3(const std::span<const double, 2> cooPlane, bool north_pole) {
     std::array<double, 3> cooSphere;
     double t = 1 / (4 + cooPlane[0] * cooPlane[0] + cooPlane[1] * cooPlane[1]);
 	cooSphere[0] = 4 * cooPlane[0] * t;
@@ -119,7 +119,7 @@ inline std::array<double, 3> stereographicProjection2_3(const std::span<const do
     return cooSphere;
 }
 
-inline std::tuple<std::array<double, 3>, Tensor2D> stereographicProjection2_3Derivative1(const std::span<const double> cooPlane, bool north_pole) {
+std::tuple<std::array<double, 3>, Tensor2D> stereographicProjection2_3Derivative1(const std::span<const double> cooPlane, bool north_pole) {
     
     // first get the mapping
     std::array<double, 3> cooSphere;
@@ -155,7 +155,7 @@ inline std::tuple<std::array<double, 3>, Tensor2D> stereographicProjection2_3Der
 	return std::tuple<std::array<double, 3>, Tensor2D>(cooSphere, std::move(xdu));
 }
 
-inline std::tuple<std::array<double, 3>, Tensor2D, Tensor3D> stereographicProjection2_3Derivative2(const std::span<const double> cooPlane, bool north_pole) {
+std::tuple<std::array<double, 3>, Tensor2D, Tensor3D> stereographicProjection2_3Derivative2(const std::span<const double> cooPlane, bool north_pole) {
 
     // first get the mapping
     std::array<double, 3> cooSphere;

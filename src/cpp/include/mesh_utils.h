@@ -5,6 +5,7 @@
 #include <span>
 #include <cmath>
 #include <array>
+#include <cstdint>
 #include <omp.h>
 
 // edges method

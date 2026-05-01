@@ -36,6 +36,11 @@ set_target_properties(cpgeo PROPERTIES
     PUBLIC_HEADER ${CMAKE_CURRENT_SOURCE_DIR}/../../include/cpgeo.h
 )
 
+# Windows: 去掉 lib 前缀（生成 cpgeo.dll 而非 libcpgeo.dll）
+if(WIN32)
+    set_target_properties(cpgeo PROPERTIES PREFIX "")
+endif()
+
 # Include directories
 target_include_directories(cpgeo
     PUBLIC

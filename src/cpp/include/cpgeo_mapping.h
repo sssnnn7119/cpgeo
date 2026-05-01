@@ -15,10 +15,10 @@
 
 namespace cpgeo {
 
-    inline std::array<double, 2> stereographicProjection3_2(const std::span<const double, 3> cooSphere, bool north_pole = true);
-    inline std::array<double, 3> stereographicProjection2_3(const std::span<const double, 2> cooPlane, bool north_pole = true);
-    inline std::tuple<std::array<double, 3>, Tensor2D> stereographicProjection2_3Derivative1(const std::span<const double> cooPlane, bool north_pole = true);
-    inline std::tuple<std::array<double, 3>, Tensor2D, Tensor3D> stereographicProjection2_3Derivative2(const std::span<const double> cooPlane, bool north_pole = true);
+    std::array<double, 2> stereographicProjection3_2(const std::span<const double, 3> cooSphere, bool north_pole = true);
+    std::array<double, 3> stereographicProjection2_3(const std::span<const double, 2> cooPlane, bool north_pole = true);
+    std::tuple<std::array<double, 3>, Tensor2D> stereographicProjection2_3Derivative1(const std::span<const double> cooPlane, bool north_pole = true);
+    std::tuple<std::array<double, 3>, Tensor2D, Tensor3D> stereographicProjection2_3Derivative2(const std::span<const double> cooPlane, bool north_pole = true);
 
 
     /** calculate the k-th nearest neighbor distances for each point in knots

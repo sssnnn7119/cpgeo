@@ -18,7 +18,9 @@
 #include <sstream>
 #include <string>
 
-const double M_PI = 3.14159265358979323846;
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 static bool read_points_from_file(const std::string& path, std::vector<double>& out_points) {
     std::ifstream ifs(path);
