@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 #ifdef _WIN32
     #ifdef cpgeo_EXPORTS
         #define CPGEO_API __declspec(dllexport)
@@ -497,6 +499,58 @@ CPGEO_API void mesh_optimize_by_edge_flipping(
         int num_faces,
         int max_iterations,
         int* out_faces
+);
+
+// ==============================================================================================================
+// ================== Rotational Symmetry =======================================================================
+// ==============================================================================================================
+
+/**
+ * @brief Phase 1: Compute Cn rotational symmetry enforcement around z-axis
+ *
+ * Takes a mesh and enforces Cn rotational symmetry by extracting a clean sector,
+ * replicating it, stitching seams, filling polar holes, and edge-flipping.
+ *
+ * @param vertices Input vertex coordinates (size: num_vertices * 3)
+ * @param num_vertices Number of input vertices
+ * @param faces Input face indices (size: num_faces * 3), int64 for large meshes
+ * @param num_faces Number of input faces
+ * @param periods Number of rotational symmetry periods (>= 2)
+ * @param threshold Sector boundary threshold (negative = auto-compute from mean edge length)
+ * @param tol Numerical tolerance
+ * @param return_match Whether to also compute rotational vertex correspondence
+ * @param out_num_vertices Output pointer for number of output vertices
+ * @param out_num_faces Output pointer for number of output faces
+ * @param out_match_rows Output pointer for match rows (periods) if return_match
+ * @param out_match_cols Output pointer for match cols (base sector vertex count) if return_match
+ */
+CPGEO_API void rotational_symmetry_z_compute(
+        const double* vertices,
+        int num_vertices,
+        const int64_t* faces,
+        int num_faces,
+        int periods,
+        double threshold,
+        double tol,
+        int return_match,
+        int* out_num_vertices,
+        int* out_num_faces,
+        int* out_match_rows,
+        int* out_match_cols
+);
+
+/**
+ * @brief Phase 2: Retrieve rotational symmetry results
+ *
+ * @param out_vertices Output vertex coordinates (size: out_num_vertices * 3)
+ * @param out_faces Output face indices (size: out_num_faces * 3)
+ * @param out_match Output match array (size: out_match_rows * out_match_cols), can be NULL if return_match=0
+ * @return 0 on success, non-zero on error
+ */
+CPGEO_API int rotational_symmetry_z_get(
+        double* out_vertices,
+        int64_t* out_faces,
+        int64_t* out_match
 );
 
 #ifdef __cplusplus

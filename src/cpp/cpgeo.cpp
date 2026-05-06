@@ -5,10 +5,11 @@
 #include "cpgeo_mapping.h"
 #include "cpgeo_seeding.h"
 #include "mesh_edge_flip.h"
+#include "mesh_utils.h"
+#include "symmetry_rotation.h"
 #include <memory>
 #include <algorithm>
 #include "tensor.h"
-#include "mesh_utils.h"
 
 // cpgeo method implementations
 extern "C" {
@@ -727,6 +728,87 @@ extern "C" {
         } catch (...) {
             // On error, copy input to output
             std::copy(faces_in, faces_in + num_faces * 3, out_faces);
+        }
+    }
+
+    // ==================== Rotational Symmetry ====================
+
+    static std::vector<double> temp_rot_sym_vertices;
+    static std::vector<int64_t> temp_rot_sym_faces;
+    static std::vector<int64_t> temp_rot_sym_match;
+
+    CPGEO_API void rotational_symmetry_z_compute(
+        const double* vertices,
+        int num_vertices,
+        const int64_t* faces,
+        int num_faces,
+        int periods,
+        double threshold,
+        double tol,
+        int return_match,
+        int* out_num_vertices,
+        int* out_num_faces,
+        int* out_match_rows,
+        int* out_match_cols
+    ) {
+        if (!vertices || !faces || !out_num_vertices || !out_num_faces || num_vertices <= 0 || num_faces <= 0 || periods < 2) {
+            if (out_num_vertices) *out_num_vertices = 0;
+            if (out_num_faces) *out_num_faces = 0;
+            if (out_match_rows) *out_match_rows = 0;
+            if (out_match_cols) *out_match_cols = 0;
+            return;
+        }
+
+        try {
+            std::span<const double> vert_span(vertices, static_cast<size_t>(num_vertices) * 3);
+            std::span<const int64_t> face_span(faces, static_cast<size_t>(num_faces) * 3);
+
+            auto result = cpgeo::enforce_rotational_symmetry_z(
+                vert_span, face_span, periods, threshold, tol, return_match != 0);
+
+            temp_rot_sym_vertices = std::move(result.vertices);
+            temp_rot_sym_faces = std::move(result.faces);
+            temp_rot_sym_match = std::move(result.match);
+
+            *out_num_vertices = static_cast<int>(temp_rot_sym_vertices.size() / 3);
+            *out_num_faces = static_cast<int>(temp_rot_sym_faces.size() / 3);
+            if (return_match && out_match_rows && out_match_cols) {
+                if (!temp_rot_sym_match.empty()) {
+                    *out_match_rows = periods;
+                    *out_match_cols = static_cast<int>(temp_rot_sym_match.size() / periods);
+                } else {
+                    *out_match_rows = 0;
+                    *out_match_cols = 0;
+                }
+            }
+        } catch (...) {
+            if (out_num_vertices) *out_num_vertices = 0;
+            if (out_num_faces) *out_num_faces = 0;
+            if (out_match_rows) *out_match_rows = 0;
+            if (out_match_cols) *out_match_cols = 0;
+        }
+    }
+
+    CPGEO_API int rotational_symmetry_z_get(
+        double* out_vertices,
+        int64_t* out_faces,
+        int64_t* out_match
+    ) {
+        if (!out_vertices || !out_faces) return -1;
+
+        try {
+            std::copy(temp_rot_sym_vertices.begin(), temp_rot_sym_vertices.end(), out_vertices);
+            std::copy(temp_rot_sym_faces.begin(), temp_rot_sym_faces.end(), out_faces);
+            if (out_match && !temp_rot_sym_match.empty()) {
+                std::copy(temp_rot_sym_match.begin(), temp_rot_sym_match.end(), out_match);
+            }
+
+            temp_rot_sym_vertices.clear();
+            temp_rot_sym_faces.clear();
+            temp_rot_sym_match.clear();
+            return 0;
+        } catch (...) {
+            return -1;
         }
     }
 

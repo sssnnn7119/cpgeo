@@ -12,6 +12,7 @@ add_library(cpgeo SHARED
     src/tensor.cpp
     src/mesh_utils.cpp
     src/mesh_edge_flip.cpp
+    src/symmetry_rotation.cpp
     
     # 头文件（让 IDE 能显示和索引）
     include/triangulation.h
@@ -22,6 +23,7 @@ add_library(cpgeo SHARED
     include/tensor.h
     include/mesh_utils.h
     include/mesh_edge_flip.h
+    include/symmetry_rotation.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include/cpgeo.h
 )
 

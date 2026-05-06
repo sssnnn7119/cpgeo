@@ -1065,6 +1065,110 @@ def optimize_mesh_by_edge_flipping(vertices: np.ndarray, faces: np.ndarray, max_
     return out_faces.reshape(-1, 3)
 
 
+# ==================== Rotational Symmetry ====================
+
+# rotational_symmetry_z_compute
+_lib.rotational_symmetry_z_compute.argtypes = [
+    ctypes.POINTER(ctypes.c_double),  # vertices
+    ctypes.c_int,                     # num_vertices
+    ctypes.POINTER(ctypes.c_int64),   # faces
+    ctypes.c_int,                     # num_faces
+    ctypes.c_int,                     # periods
+    ctypes.c_double,                  # threshold
+    ctypes.c_double,                  # tol
+    ctypes.c_int,                     # return_match
+    ctypes.POINTER(ctypes.c_int),     # out_num_vertices
+    ctypes.POINTER(ctypes.c_int),     # out_num_faces
+    ctypes.POINTER(ctypes.c_int),     # out_match_rows
+    ctypes.POINTER(ctypes.c_int),     # out_match_cols
+]
+_lib.rotational_symmetry_z_compute.restype = None
+
+# rotational_symmetry_z_get
+_lib.rotational_symmetry_z_get.argtypes = [
+    ctypes.POINTER(ctypes.c_double),   # out_vertices
+    ctypes.POINTER(ctypes.c_int64),    # out_faces
+    ctypes.POINTER(ctypes.c_int64),    # out_match
+]
+_lib.rotational_symmetry_z_get.restype = ctypes.c_int
+
+
+def rotational_symmetry_z(vertices: np.ndarray,
+                          faces: np.ndarray,
+                          periods: int,
+                          threshold: float = -1.0,
+                          tol: float = 1e-8,
+                          return_match: bool = False):
+    """Enforce Cn rotational symmetry around z-axis by strict open-sector clipping + replication.
+
+    Args:
+        vertices: Shape (N, 3) float64.
+        faces: Shape (F, 3) int64.
+        periods: Number of periods in Cn symmetry (>= 2).
+        threshold: Threshold for determining the sector boundary (negative = auto).
+        tol: Numerical tolerance.
+        return_match: Return rotational correspondence when True.
+
+    Returns:
+        (new_vertices, new_faces) or (new_vertices, new_faces, match)
+    """
+    if vertices.ndim != 2 or vertices.shape[1] != 3:
+        raise ValueError("vertices must have shape (N, 3)")
+    if faces.ndim != 2 or faces.shape[1] != 3:
+        raise ValueError("faces must have shape (F, 3)")
+    if periods < 2:
+        raise ValueError("periods must be >= 2")
+
+    vertices_flat = np.ascontiguousarray(vertices, dtype=np.float64).flatten()
+    faces_flat = np.ascontiguousarray(faces, dtype=np.int64).flatten()
+
+    num_vertices = vertices.shape[0]
+    num_faces = faces.shape[0]
+
+    out_num_vertices = ctypes.c_int()
+    out_num_faces = ctypes.c_int()
+    out_match_rows = ctypes.c_int()
+    out_match_cols = ctypes.c_int()
+
+    _lib.rotational_symmetry_z_compute(
+        vertices_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        ctypes.c_int(num_vertices),
+        faces_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_int64)),
+        ctypes.c_int(num_faces),
+        ctypes.c_int(periods),
+        ctypes.c_double(float(threshold)),
+        ctypes.c_double(float(tol)),
+        ctypes.c_int(1 if return_match else 0),
+        ctypes.byref(out_num_vertices),
+        ctypes.byref(out_num_faces),
+        ctypes.byref(out_match_rows),
+        ctypes.byref(out_match_cols),
+    )
+
+    if out_num_vertices.value <= 0 or out_num_faces.value <= 0:
+        raise RuntimeError("rotational_symmetry_z failed")
+
+    out_vertices = np.zeros(out_num_vertices.value * 3, dtype=np.float64)
+    out_faces = np.zeros(out_num_faces.value * 3, dtype=np.int64)
+
+    out_match = None
+    if return_match and out_match_rows.value > 0 and out_match_cols.value > 0:
+        out_match = np.zeros(out_match_rows.value * out_match_cols.value, dtype=np.int64)
+
+    result = _lib.rotational_symmetry_z_get(
+        out_vertices.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        out_faces.ctypes.data_as(ctypes.POINTER(ctypes.c_int64)),
+        out_match.ctypes.data_as(ctypes.POINTER(ctypes.c_int64)) if out_match is not None else None,
+    )
+
+    if return_match and out_match is not None:
+        return (out_vertices.reshape(-1, 3),
+                out_faces.reshape(-1, 3),
+                out_match.reshape(out_match_rows.value, out_match_cols.value))
+
+    return out_vertices.reshape(-1, 3), out_faces.reshape(-1, 3)
+
+
 __all__ = [
     'get_triangulation',
     'get_sphere_triangulation',
@@ -1083,4 +1187,6 @@ __all__ = [
     'get_mesh_closure_edge_length_derivative0',
     'get_mesh_closure_edge_length_derivative2',
     'optimize_mesh_by_edge_flipping',
+    'rotational_symmetry_z',
+    'uniformly_mesh',
 ]

@@ -32,42 +32,221 @@ def _rot_z(points: np.ndarray, angle: float) -> np.ndarray:
 def _zipper_stitch(right_ids: np.ndarray,
                    right_pts: np.ndarray,
                    left_ids: np.ndarray,
-                   left_pts: np.ndarray) -> np.ndarray:
+                   left_pts: np.ndarray,
+                   dihedral_angle_threshold: float = 150.0,
+                   debug: bool = False) -> np.ndarray:
+    """
+    Zipper-stitch two seam chains into triangle strips.
+
+    Uses DFS with branch-and-bound to find the sequence of cross-edges
+    that **maximises the minimum interior angle** among all triangles,
+    while ensuring every consecutive pair satisfies the dihedral angle
+    constraint (< *dihedral_angle_threshold*, default 150°).
+
+    When a dead end is hit (no valid candidate at some step), the
+    algorithm backtracks and tries the alternative earlier choice,
+    guaranteeing a globally optimal path under the constraints.
+
+    If *debug* is True, a single pyvista window opens after the search;
+    press **n** to step through the stitched triangles and **q** to quit.
+    """
+
     if right_ids.size < 2 or left_ids.size < 2:
         return np.zeros((0, 3), dtype=np.int64)
 
     rid, rpt, lid, lpt = _order_seam_chains(right_ids, right_pts, left_ids, left_pts)
 
-    tris = []
-    i = 0
-    j = 0
     nr = int(rid.size)
     nl = int(lid.size)
+    max_dihedral = np.deg2rad(float(dihedral_angle_threshold))
 
-    while i < nr - 1 or j < nl - 1:
-        can_i = i < nr - 1
-        can_j = j < nl - 1
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+    def _min_angle(p: np.ndarray) -> float:
+        a = float(np.linalg.norm(p[1] - p[2]))
+        b = float(np.linalg.norm(p[0] - p[2]))
+        c = float(np.linalg.norm(p[0] - p[1]))
+        ang1 = np.arccos(np.clip((b * b + c * c - a * a) / (2.0 * b * c), -1.0, 1.0))
+        ang2 = np.arccos(np.clip((a * a + c * c - b * b) / (2.0 * a * c), -1.0, 1.0))
+        ang3 = np.arccos(np.clip((a * a + b * b - c * c) / (2.0 * a * b), -1.0, 1.0))
+        return min(ang1, ang2, ang3)
 
-        if can_i and can_j:
-            # Greedy zipper: pick the shorter next cross-edge.
-            # Option 1: connect (rid[i+1] -- lid[j])
-            # Option 2: connect (rid[i] -- lid[j+1])
-            ci = float(np.linalg.norm(rpt[i + 1] - lpt[j]))
-            cj = float(np.linalg.norm(rpt[i] - lpt[j + 1]))
-            if ci <= cj:
-                tris.append([rid[i], rid[i + 1], lid[j]])
-                i += 1
+    def _tri_normal(p: np.ndarray) -> np.ndarray:
+        n = np.cross(p[1] - p[0], p[2] - p[0])
+        ln = float(np.linalg.norm(n))
+        return n / ln if ln > 1e-12 else np.zeros(3, dtype=np.float64)
+
+    def _dihedral_ok(prev_n: np.ndarray | None, curr_n: np.ndarray) -> bool:
+        if prev_n is None or np.linalg.norm(prev_n) < 1e-12 or np.linalg.norm(curr_n) < 1e-12:
+            return True
+        angle = np.arccos(np.clip(float(np.dot(prev_n, curr_n)), -1.0, 1.0))
+        return angle < max_dihedral
+
+    # ------------------------------------------------------------------
+    # greedy baseline (for branch-and-bound pruning)
+    # ------------------------------------------------------------------
+    greedy_path: list[bool] = []   # True → advance i, False → advance j
+    gi, gj = 0, 0
+    g_prev_n: np.ndarray | None = None
+    g_min_angle = float('inf')
+
+    while gi < nr - 1 or gj < nl - 1:
+        c_i = gi < nr - 1
+        c_j = gj < nl - 1
+        if c_i and c_j:
+            pa = np.array([rpt[gi], rpt[gi + 1], lpt[gj]], dtype=np.float64)
+            pb = np.array([rpt[gi], lpt[gj + 1], lpt[gj]], dtype=np.float64)
+            ma = _min_angle(pa)
+            mb = _min_angle(pb)
+            na = _tri_normal(pa)
+            nb = _tri_normal(pb)
+            ok_a = _dihedral_ok(g_prev_n, na)
+            ok_b = _dihedral_ok(g_prev_n, nb)
+            if ok_a and ok_b:
+                pick_a = ma >= mb
+            elif ok_a:
+                pick_a = True
+            elif ok_b:
+                pick_a = False
             else:
-                tris.append([rid[i], lid[j + 1], lid[j]])
-                j += 1
-        elif can_i:
-            tris.append([rid[i], rid[i + 1], lid[j]])
-            i += 1
+                pick_a = ma >= mb
+            if pick_a:
+                greedy_path.append(True)
+                g_prev_n = na
+                g_min_angle = min(g_min_angle, ma)
+                gi += 1
+            else:
+                greedy_path.append(False)
+                g_prev_n = nb
+                g_min_angle = min(g_min_angle, mb)
+                gj += 1
+        elif c_i:
+            pts = np.array([rpt[gi], rpt[gi + 1], lpt[gj]], dtype=np.float64)
+            greedy_path.append(True)
+            g_prev_n = _tri_normal(pts)
+            g_min_angle = min(g_min_angle, _min_angle(pts))
+            gi += 1
         else:
-            tris.append([rid[i], lid[j + 1], lid[j]])
-            j += 1
+            pts = np.array([rpt[gi], lpt[gj + 1], lpt[gj]], dtype=np.float64)
+            greedy_path.append(False)
+            g_prev_n = _tri_normal(pts)
+            g_min_angle = min(g_min_angle, _min_angle(pts))
+            gj += 1
 
-    return np.asarray(tris, dtype=np.int64)
+    best_path: list[bool] = greedy_path
+    best_min_angle: float = g_min_angle
+
+    # ------------------------------------------------------------------
+    # DFS + branch-and-bound  (backtrack when a dead end is hit)
+    # ------------------------------------------------------------------
+    _max_nodes = 100_000
+    _node_count = 0
+
+    def _dfs(i: int, j: int, path: list[bool],
+             prev_n: np.ndarray | None, cur_min: float) -> None:
+        nonlocal best_path, best_min_angle, _node_count
+        _node_count += 1
+        if _node_count > _max_nodes:
+            return
+
+        if i == nr - 1 and j == nl - 1:
+            if cur_min > best_min_angle:
+                best_min_angle = cur_min
+                best_path = path.copy()
+            return
+
+        c_i = i < nr - 1
+        c_j = j < nl - 1
+
+        candidates: list[tuple[bool, int, int, np.ndarray, float]] = []
+
+        if c_i:
+            pts = np.array([rpt[i], rpt[i + 1], lpt[j]], dtype=np.float64)
+            n = _tri_normal(pts)
+            if _dihedral_ok(prev_n, n):
+                candidates.append((True, i + 1, j, n, _min_angle(pts)))
+
+        if c_j:
+            pts = np.array([rpt[i], lpt[j + 1], lpt[j]], dtype=np.float64)
+            n = _tri_normal(pts)
+            if _dihedral_ok(prev_n, n):
+                candidates.append((False, i, j + 1, n, _min_angle(pts)))
+
+        # Try better min-angle first → find good paths early → tighter pruning
+        candidates.sort(key=lambda x: -x[4])
+
+        for is_i, ni, nj, n, ma in candidates:
+            new_min = cur_min if cur_min <= ma else ma
+            if new_min <= best_min_angle:
+                continue  # pruned – cannot beat current best
+            path.append(is_i)
+            _dfs(ni, nj, path, n, new_min)
+            path.pop()
+
+    _dfs(0, 0, [], None, float('inf'))
+
+    # ------------------------------------------------------------------
+    # reconstruct triangles from the winning path
+    # ------------------------------------------------------------------
+    tris: list[list[int]] = []
+    ci, cj = 0, 0
+    for pick_i in best_path:
+        if pick_i:
+            tris.append([int(rid[ci]), int(rid[ci + 1]), int(lid[cj])])
+            ci += 1
+        else:
+            tris.append([int(rid[ci]), int(lid[cj + 1]), int(lid[cj])])
+            cj += 1
+
+    result = np.asarray(tris, dtype=np.int64)
+
+    # ------------------------------------------------------------------
+    # debug visualisation (one window, press n to step)
+    # ------------------------------------------------------------------
+    def _debug_show_history(history_pts: list[np.ndarray]) -> None:
+        import pyvista as pv
+
+        plotter = pv.Plotter()
+        plotter.add_points(rpt, color='blue', point_size=8)
+        plotter.add_points(lpt, color='green', point_size=8)
+        if rpt.shape[0] > 1:
+            plotter.add_mesh(pv.lines_from_points(rpt), color='blue', line_width=4)
+        if lpt.shape[0] > 1:
+            plotter.add_mesh(pv.lines_from_points(lpt), color='green', line_width=4)
+
+        state = {'step': 0}
+
+        def _on_next() -> None:
+            if state['step'] >= len(history_pts):
+                return
+            tri = history_pts[state['step']]
+            mesh = pv.PolyData(tri, np.array([[3, 0, 1, 2]], dtype=np.int64))
+            plotter.add_mesh(mesh, color='red', show_edges=True, opacity=0.5)
+            state['step'] += 1
+
+        plotter.add_key_event('n', _on_next)
+        plotter.add_key_event('q', plotter.close)
+        plotter.add_text('Press n to advance, q to quit', font_size=12)
+        plotter.show()
+
+    if debug:
+        # Replay every triangle for visualisation
+        history_pts: list[np.ndarray] = []
+        ci, cj = 0, 0
+        for pick_i in best_path:
+            if pick_i:
+                pts = np.array([rpt[ci], rpt[ci + 1], lpt[cj]], dtype=np.float64)
+                history_pts.append(pts)
+                ci += 1
+            else:
+                pts = np.array([rpt[ci], lpt[cj + 1], lpt[cj]], dtype=np.float64)
+                history_pts.append(pts)
+                cj += 1
+
+        _debug_show_history(history_pts)
+
+    return result
 
 
 def _decide_pole_trim_count(left_side: np.ndarray,
