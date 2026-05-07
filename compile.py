@@ -2,14 +2,6 @@
 
 from pathlib import Path
 
-
-def _get_build_dir(build_root: Path, suffix: str = "") -> Path:
-    """Get a platform-specific build directory path."""
-    if suffix:
-        return build_root.parent / f"{build_root.name}{suffix}"
-    return build_root
-
-
 def copy_lib(build_dir: Path, target_dir: Path, is_windows: bool) -> bool:
     """Copy library files from build_dir to target_dir. Returns True if found."""
     import shutil
@@ -44,10 +36,10 @@ def copy_all_libs(compile_mode: str = 'Release'):
     is_windows = sys.platform == "win32"
 
     # 清空旧的 bin 目录，避免残留过期文件
-    import shutil
-    for f in TARGET_DIR.iterdir():
-        if f.is_file():
-            f.unlink()
+    # import shutil
+    # for f in TARGET_DIR.iterdir():
+    #     if f.is_file():
+    #         f.unlink()
 
     found_any = False
 
@@ -63,7 +55,7 @@ def copy_all_libs(compile_mode: str = 'Release'):
             if copy_lib(bd, TARGET_DIR, is_windows=True):
                 found_any = True
     else:
-        # Linux：复制原生 .so 和交叉编译的 .dll
+        # Linux：复制原生 .so 
         native_dirs = [
             ROOT / "build" / "lib",
             ROOT / "build" / "bin",
@@ -72,14 +64,6 @@ def copy_all_libs(compile_mode: str = 'Release'):
             if copy_lib(bd, TARGET_DIR, is_windows=False):
                 found_any = True
 
-        # mingw-w64 交叉编译的 .dll
-        mingw_dirs = [
-            ROOT / "build-mingw" / "lib",
-            ROOT / "build-mingw" / "bin",
-        ]
-        for bd in mingw_dirs:
-            if copy_lib(bd, TARGET_DIR, is_windows=False):
-                found_any = True
 
     if not found_any:
         print("警告：未找到编译的库文件！")
@@ -116,42 +100,15 @@ def compile_native(compile_mode: str):
             print("警告：demo 程序编译失败，但库已编译成功。")
 
 
-def compile_mingw(compile_mode: str):
-    """使用 mingw-w64 交叉编译 Windows .dll（仅在 Linux 上执行）"""
-    import subprocess
-    import sys
-    from pathlib import Path
-
-    if sys.platform == "win32":
-        print("跳过 mingw 交叉编译（已在 Windows 上）")
-        return
-
-    ROOT = Path(__file__).parent
-    BUILD_DIR = ROOT / "build-mingw"
-    BUILD_DIR.mkdir(parents=True, exist_ok=True)
-
-    cmake_mode = compile_mode.capitalize()
-    toolchain = ROOT / "cmake" / "toolchain-mingw-w64.cmake"
-
-    subprocess.run(
-        ["cmake", "..",
-         f"-DCMAKE_BUILD_TYPE={cmake_mode}",
-         f"-DCMAKE_TOOLCHAIN_FILE={toolchain}",
-         "-DBUILD_TESTS=OFF"],
-        cwd=BUILD_DIR, check=True
-    )
-
-    result = subprocess.run(["cmake", "--build", ".", "--target", "cpgeo"], cwd=BUILD_DIR)
-    if result.returncode != 0:
-        raise RuntimeError("mingw-w64 交叉编译失败！")
-    print("mingw-w64 交叉编译成功！")
-
-
 if __name__ == "__main__":
 
     import sys
 
     compile_mode = 'release'  # 'Release' or 'Debug'
+
+    import os
+    if os.path.exists("build/CMakeCache.txt"):
+        os.remove("build/CMakeCache.txt")  # 或者其他构建系统生成的文件，强制 CMake 重新生成构建文件
 
     # 编译原生库
     print("=" * 50)
@@ -162,18 +119,6 @@ if __name__ == "__main__":
     except RuntimeError as e:
         print(f"错误：{e}")
         exit(1)
-
-    # mingw-w64 交叉编译 Windows .dll（仅在 Linux 上执行）
-    if sys.platform != "win32":
-        print()
-        print("=" * 50)
-        print("交叉编译 Windows .dll（mingw-w64）...")
-        print("=" * 50)
-        try:
-            compile_mingw(compile_mode)
-        except RuntimeError as e:
-            print(f"警告：{e}")
-            print("继续复制已编译的库文件...")
 
     print()
     print("=" * 50)

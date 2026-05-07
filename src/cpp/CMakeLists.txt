@@ -61,7 +61,7 @@ target_compile_definitions(cpgeo
 
 # Compiler warnings
 if(MSVC)
-    target_compile_options(cpgeo PRIVATE /W4)
+    target_compile_options(cpgeo PRIVATE /utf-8 /W4)
 else()
     target_compile_options(cpgeo PRIVATE -Wall -Wextra -Wpedantic)
 endif()
