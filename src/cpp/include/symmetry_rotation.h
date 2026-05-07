@@ -60,8 +60,7 @@ std::vector<int64_t> zipper_stitch(
     std::span<const double> right_pts,
     std::span<const int64_t> left_ids,
     std::span<const double> left_pts,
-    double dihedral_angle_threshold = 150.0,
-    bool debug = false);
+    double dihedral_angle_threshold = 150.0);
 
 /**
  * Decide how many vertices to trim from pole ends of seam chains.

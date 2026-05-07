@@ -33,220 +33,204 @@ def _zipper_stitch(right_ids: np.ndarray,
                    right_pts: np.ndarray,
                    left_ids: np.ndarray,
                    left_pts: np.ndarray,
-                   dihedral_angle_threshold: float = 150.0,
-                   debug: bool = False) -> np.ndarray:
+                   dihedral_angle_threshold: float = 60.0) -> np.ndarray:
     """
-    Zipper-stitch two seam chains into triangle strips.
+    Stitch two open boundary curves with a triangulated strip, like a zipper.
 
-    Uses DFS with branch-and-bound to find the sequence of cross-edges
-    that **maximises the minimum interior angle** among all triangles,
-    while ensuring every consecutive pair satisfies the dihedral angle
-    constraint (< *dihedral_angle_threshold*, default 150°).
+    The first and last points of the two boundaries are assumed to be connected
+    (right[0]↔left[0], right[-1]↔left[-1]).  Between them triangles are added
+    by advancing either the right or the left side at each step.
 
-    When a dead end is hit (no valid candidate at some step), the
-    algorithm backtracks and tries the alternative earlier choice,
-    guaranteeing a globally optimal path under the constraints.
+    The stitch respects two quality criteria in lexicographic order:
+      1. The dihedral angle between *adjacent* triangles must stay within
+         `dihedral_angle_threshold` degrees.
+      2. Subject to (1), the *minimum interior angle* over all triangles is
+         maximised (i.e. the worst triangle is made as fat as possible).
 
-    If *debug* is True, a single pyvista window opens after the search;
-    press **n** to step through the stitched triangles and **q** to quit.
+    A dynamic-programming scheme is used to find the optimal advancing path on
+    the (right × left) grid while tracking the last-move type (RIGHT or LEFT),
+    which uniquely determines the last triangle normal for the dihedral check.
+
+    Parameters
+    ----------
+    right_ids : ndarray, shape (M,)
+        Global vertex indices of the right boundary, ordered south→north.
+    right_pts : ndarray, shape (M, 3)
+        3-D coordinates of the right boundary.
+    left_ids : ndarray, shape (N,)
+        Global vertex indices of the left boundary, ordered south→north.
+    left_pts : ndarray, shape (N, 3)
+        3-D coordinates of the left boundary.
+    dihedral_angle_threshold : float
+        Maximum allowed dihedral angle (in degrees) between the normals of
+        consecutive triangles.  Default 60.0.
+
+    Returns
+    -------
+    faces : ndarray, shape (T, 3), dtype int64
+        Triangle vertex indices referencing the original *ids* arrays.
+        Returns an empty array if M < 2 or N < 2.
     """
+    m = int(right_ids.shape[0])
+    n = int(left_ids.shape[0])
 
-    if right_ids.size < 2 or left_ids.size < 2:
+    if m < 2 or n < 2:
         return np.zeros((0, 3), dtype=np.int64)
 
-    rid, rpt, lid, lpt = _order_seam_chains(right_ids, right_pts, left_ids, left_pts)
-
-    nr = int(rid.size)
-    nl = int(lid.size)
-    max_dihedral = np.deg2rad(float(dihedral_angle_threshold))
+    thresh = float(np.deg2rad(dihedral_angle_threshold))
+    NEG = -1e30
 
     # ------------------------------------------------------------------
-    # helpers
+    # small geometry helpers
     # ------------------------------------------------------------------
-    def _min_angle(p: np.ndarray) -> float:
-        a = float(np.linalg.norm(p[1] - p[2]))
-        b = float(np.linalg.norm(p[0] - p[2]))
-        c = float(np.linalg.norm(p[0] - p[1]))
-        ang1 = np.arccos(np.clip((b * b + c * c - a * a) / (2.0 * b * c), -1.0, 1.0))
-        ang2 = np.arccos(np.clip((a * a + c * c - b * b) / (2.0 * a * c), -1.0, 1.0))
-        ang3 = np.arccos(np.clip((a * a + b * b - c * c) / (2.0 * a * b), -1.0, 1.0))
-        return min(ang1, ang2, ang3)
+    def _tri_normal(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray) -> np.ndarray:
+        n = np.cross(p1 - p0, p2 - p0)
+        nrm = np.linalg.norm(n)
+        return n / nrm if nrm > 1e-12 else np.array([0.0, 0.0, 1.0], dtype=np.float64)
 
-    def _tri_normal(p: np.ndarray) -> np.ndarray:
-        n = np.cross(p[1] - p[0], p[2] - p[0])
-        ln = float(np.linalg.norm(n))
-        return n / ln if ln > 1e-12 else np.zeros(3, dtype=np.float64)
+    def _tri_min_angle(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray) -> float:
+        # squared edge lengths
+        a2 = float(np.sum((p1 - p2) ** 2))
+        b2 = float(np.sum((p0 - p2) ** 2))
+        c2 = float(np.sum((p1 - p0) ** 2))
+        eps = 1e-12
+        cos_a = (b2 + c2 - a2) / (2.0 * np.sqrt(b2 * c2) + eps)
+        cos_b = (a2 + c2 - b2) / (2.0 * np.sqrt(a2 * c2) + eps)
+        cos_c = (a2 + b2 - c2) / (2.0 * np.sqrt(a2 * b2) + eps)
+        return float(min(
+            np.arccos(np.clip(cos_a, -1.0, 1.0)),
+            np.arccos(np.clip(cos_b, -1.0, 1.0)),
+            np.arccos(np.clip(cos_c, -1.0, 1.0)),
+        ))
 
-    def _dihedral_ok(prev_n: np.ndarray | None, curr_n: np.ndarray) -> bool:
-        if prev_n is None or np.linalg.norm(prev_n) < 1e-12 or np.linalg.norm(curr_n) < 1e-12:
-            return True
-        angle = np.arccos(np.clip(float(np.dot(prev_n, curr_n)), -1.0, 1.0))
-        return angle < max_dihedral
-
-    # ------------------------------------------------------------------
-    # greedy baseline (for branch-and-bound pruning)
-    # ------------------------------------------------------------------
-    greedy_path: list[bool] = []   # True → advance i, False → advance j
-    gi, gj = 0, 0
-    g_prev_n: np.ndarray | None = None
-    g_min_angle = float('inf')
-
-    while gi < nr - 1 or gj < nl - 1:
-        c_i = gi < nr - 1
-        c_j = gj < nl - 1
-        if c_i and c_j:
-            pa = np.array([rpt[gi], rpt[gi + 1], lpt[gj]], dtype=np.float64)
-            pb = np.array([rpt[gi], lpt[gj + 1], lpt[gj]], dtype=np.float64)
-            ma = _min_angle(pa)
-            mb = _min_angle(pb)
-            na = _tri_normal(pa)
-            nb = _tri_normal(pb)
-            ok_a = _dihedral_ok(g_prev_n, na)
-            ok_b = _dihedral_ok(g_prev_n, nb)
-            if ok_a and ok_b:
-                pick_a = ma >= mb
-            elif ok_a:
-                pick_a = True
-            elif ok_b:
-                pick_a = False
-            else:
-                pick_a = ma >= mb
-            if pick_a:
-                greedy_path.append(True)
-                g_prev_n = na
-                g_min_angle = min(g_min_angle, ma)
-                gi += 1
-            else:
-                greedy_path.append(False)
-                g_prev_n = nb
-                g_min_angle = min(g_min_angle, mb)
-                gj += 1
-        elif c_i:
-            pts = np.array([rpt[gi], rpt[gi + 1], lpt[gj]], dtype=np.float64)
-            greedy_path.append(True)
-            g_prev_n = _tri_normal(pts)
-            g_min_angle = min(g_min_angle, _min_angle(pts))
-            gi += 1
-        else:
-            pts = np.array([rpt[gi], lpt[gj + 1], lpt[gj]], dtype=np.float64)
-            greedy_path.append(False)
-            g_prev_n = _tri_normal(pts)
-            g_min_angle = min(g_min_angle, _min_angle(pts))
-            gj += 1
-
-    best_path: list[bool] = greedy_path
-    best_min_angle: float = g_min_angle
+    def _dihedral(n1: np.ndarray, n2: np.ndarray) -> float:
+        cos_a = float(np.dot(n1, n2))
+        return float(np.arccos(np.clip(cos_a, -1.0, 1.0)))
 
     # ------------------------------------------------------------------
-    # DFS + branch-and-bound  (backtrack when a dead end is hit)
+    # DP tables
+    #   k=0 → last move was RIGHT (advanced i)
+    #   k=1 → last move was LEFT  (advanced j)
     # ------------------------------------------------------------------
-    _max_nodes = 100_000
-    _node_count = 0
+    rp, lp = right_pts, left_pts
 
-    def _dfs(i: int, j: int, path: list[bool],
-             prev_n: np.ndarray | None, cur_min: float) -> None:
-        nonlocal best_path, best_min_angle, _node_count
-        _node_count += 1
-        if _node_count > _max_nodes:
-            return
+    score = np.full((m, n, 2), NEG, dtype=np.float64)   # best min-angle so far
+    last_n = np.zeros((m, n, 2, 3), dtype=np.float64)   # normal of last triangle
+    prev = np.full((m, n, 2, 3), -1, dtype=np.int64)    # (pi, pj, pk)
 
-        if i == nr - 1 and j == nl - 1:
-            if cur_min > best_min_angle:
-                best_min_angle = cur_min
-                best_path = path.copy()
-            return
+    # ----- first step (no previous triangle → no dihedral check) -----
+    if m > 1:
+        n0 = _tri_normal(rp[0], rp[1], lp[0])
+        score[1, 0, 0] = _tri_min_angle(rp[0], rp[1], lp[0])
+        last_n[1, 0, 0] = n0
+        prev[1, 0, 0] = [0, 0, -1]
 
-        c_i = i < nr - 1
-        c_j = j < nl - 1
+    if n > 1:
+        n0 = _tri_normal(rp[0], lp[1], lp[0])
+        score[0, 1, 1] = _tri_min_angle(rp[0], lp[1], lp[0])
+        last_n[0, 1, 1] = n0
+        prev[0, 1, 1] = [0, 0, -1]
 
-        candidates: list[tuple[bool, int, int, np.ndarray, float]] = []
+    # ----- main DP loop -----
+    for i in range(m):
+        for j in range(n):
+            if i == 0 and j == 0:
+                continue
 
-        if c_i:
-            pts = np.array([rpt[i], rpt[i + 1], lpt[j]], dtype=np.float64)
-            n = _tri_normal(pts)
-            if _dihedral_ok(prev_n, n):
-                candidates.append((True, i + 1, j, n, _min_angle(pts)))
+            for k in range(2):
+                cur_score = float(score[i, j, k])
+                if cur_score <= NEG * 0.5:
+                    continue
+                cur_n = last_n[i, j, k]
 
-        if c_j:
-            pts = np.array([rpt[i], lpt[j + 1], lpt[j]], dtype=np.float64)
-            n = _tri_normal(pts)
-            if _dihedral_ok(prev_n, n):
-                candidates.append((False, i, j + 1, n, _min_angle(pts)))
+                # --- advance RIGHT → (i+1, j), k=0 ---
+                if i + 1 < m:
+                    nn = _tri_normal(rp[i], rp[i + 1], lp[j])
+                    if _dihedral(cur_n, nn) <= thresh:
+                        new_score = min(cur_score, _tri_min_angle(rp[i], rp[i + 1], lp[j]))
+                        if new_score > score[i + 1, j, 0]:
+                            score[i + 1, j, 0] = new_score
+                            last_n[i + 1, j, 0] = nn
+                            prev[i + 1, j, 0] = [i, j, k]
 
-        # Try better min-angle first → find good paths early → tighter pruning
-        candidates.sort(key=lambda x: -x[4])
+                # --- advance LEFT → (i, j+1), k=1 ---
+                if j + 1 < n:
+                    nn = _tri_normal(rp[i], lp[j + 1], lp[j])
+                    if _dihedral(cur_n, nn) <= thresh:
+                        new_score = min(cur_score, _tri_min_angle(rp[i], lp[j + 1], lp[j]))
+                        if new_score > score[i, j + 1, 1]:
+                            score[i, j + 1, 1] = new_score
+                            last_n[i, j + 1, 1] = nn
+                            prev[i, j + 1, 1] = [i, j, k]
 
-        for is_i, ni, nj, n, ma in candidates:
-            new_min = cur_min if cur_min <= ma else ma
-            if new_min <= best_min_angle:
-                continue  # pruned – cannot beat current best
-            path.append(is_i)
-            _dfs(ni, nj, path, n, new_min)
-            path.pop()
+    # ----- pick best path to (m-1, n-1) -----
+    best_k = -1
+    best_score = NEG
+    for k in range(2):
+        if score[m - 1, n - 1, k] > best_score:
+            best_score = float(score[m - 1, n - 1, k])
+            best_k = k
 
-    _dfs(0, 0, [], None, float('inf'))
+    if best_k < 0:
+        # No valid path under the dihedral constraint → fall back to
+        # a simple edge-length heuristic that ignores dihedral angles.
+        return _zipper_stitch_legacy(right_ids, rp, left_ids, lp)
 
-    # ------------------------------------------------------------------
-    # reconstruct triangles from the winning path
-    # ------------------------------------------------------------------
+    # ----- backtrack -----
+    ri, li = right_ids, left_ids
+    triangles: list[list[int]] = []
+    i, j, k = m - 1, n - 1, best_k
+
+    while True:
+        if i == 0 and j == 0:
+            break
+        pi, pj, pk = prev[i, j, k]
+        if k == 0:          # last move was RIGHT
+            triangles.append([int(ri[i - 1]), int(ri[i]), int(li[j])])
+        else:               # last move was LEFT
+            triangles.append([int(ri[i]), int(li[j]), int(li[j - 1])])
+        i, j, k = pi, pj, pk
+
+    triangles.reverse()
+    return np.asarray(triangles, dtype=np.int64)
+
+
+def _zipper_stitch_legacy(right_ids: np.ndarray,
+                          right_pts: np.ndarray,
+                          left_ids: np.ndarray,
+                          left_pts: np.ndarray) -> np.ndarray:
+    """
+    Fallback: stitch two open boundaries by comparing diagonal edge lengths
+    (minimum-link heuristic).  No dihedral-angle check is performed.
+    """
+    m = int(right_ids.shape[0])
+    n = int(left_ids.shape[0])
+    if m < 2 or n < 2:
+        return np.zeros((0, 3), dtype=np.int64)
+
+    ri, li = right_ids, left_ids
+    rp, lp = right_pts, left_pts
+    i = j = 0
     tris: list[list[int]] = []
-    ci, cj = 0, 0
-    for pick_i in best_path:
-        if pick_i:
-            tris.append([int(rid[ci]), int(rid[ci + 1]), int(lid[cj])])
-            ci += 1
+
+    while i < m - 1 or j < n - 1:
+        if i >= m - 1:
+            tris.append([int(ri[i]), int(li[j + 1]), int(li[j])])
+            j += 1
+        elif j >= n - 1:
+            tris.append([int(ri[i]), int(ri[i + 1]), int(li[j])])
+            i += 1
         else:
-            tris.append([int(rid[ci]), int(lid[cj + 1]), int(lid[cj])])
-            cj += 1
-
-    result = np.asarray(tris, dtype=np.int64)
-
-    # ------------------------------------------------------------------
-    # debug visualisation (one window, press n to step)
-    # ------------------------------------------------------------------
-    def _debug_show_history(history_pts: list[np.ndarray]) -> None:
-        import pyvista as pv
-
-        plotter = pv.Plotter()
-        plotter.add_points(rpt, color='blue', point_size=8)
-        plotter.add_points(lpt, color='green', point_size=8)
-        if rpt.shape[0] > 1:
-            plotter.add_mesh(pv.lines_from_points(rpt), color='blue', line_width=4)
-        if lpt.shape[0] > 1:
-            plotter.add_mesh(pv.lines_from_points(lpt), color='green', line_width=4)
-
-        state = {'step': 0}
-
-        def _on_next() -> None:
-            if state['step'] >= len(history_pts):
-                return
-            tri = history_pts[state['step']]
-            mesh = pv.PolyData(tri, np.array([[3, 0, 1, 2]], dtype=np.int64))
-            plotter.add_mesh(mesh, color='red', show_edges=True, opacity=0.5)
-            state['step'] += 1
-
-        plotter.add_key_event('n', _on_next)
-        plotter.add_key_event('q', plotter.close)
-        plotter.add_text('Press n to advance, q to quit', font_size=12)
-        plotter.show()
-
-    if debug:
-        # Replay every triangle for visualisation
-        history_pts: list[np.ndarray] = []
-        ci, cj = 0, 0
-        for pick_i in best_path:
-            if pick_i:
-                pts = np.array([rpt[ci], rpt[ci + 1], lpt[cj]], dtype=np.float64)
-                history_pts.append(pts)
-                ci += 1
+            ci = float(np.linalg.norm(rp[i + 1] - lp[j]))
+            cj = float(np.linalg.norm(rp[i] - lp[j + 1]))
+            if ci <= cj:
+                tris.append([int(ri[i]), int(ri[i + 1]), int(li[j])])
+                i += 1
             else:
-                pts = np.array([rpt[ci], lpt[cj + 1], lpt[cj]], dtype=np.float64)
-                history_pts.append(pts)
-                cj += 1
+                tris.append([int(ri[i]), int(li[j + 1]), int(li[j])])
+                j += 1
 
-        _debug_show_history(history_pts)
-
-    return result
+    return np.asarray(tris, dtype=np.int64)
 
 
 def _decide_pole_trim_count(left_side: np.ndarray,
@@ -267,26 +251,6 @@ def _decide_pole_trim_count(left_side: np.ndarray,
     if span > 1.8:
         return 1
     return 0
-
-
-def _order_seam_chains(right_ids: np.ndarray,
-                       right_pts: np.ndarray,
-                       left_ids: np.ndarray,
-                       left_pts: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    # Keep seam chains in south->north direction and stitch monotonically.
-    rid = right_ids.astype(np.int64)
-    rpt = np.asarray(right_pts, dtype=np.float64)
-    lid = left_ids.astype(np.int64)
-    lpt = np.asarray(left_pts, dtype=np.float64)
-
-    if rpt[0, 2] > rpt[-1, 2]:
-        rid = rid[::-1]
-        rpt = rpt[::-1]
-    if lpt[0, 2] > lpt[-1, 2]:
-        lid = lid[::-1]
-        lpt = lpt[::-1]
-
-    return rid, rpt, lid, lpt
 
 
 def _face_components_by_edges(faces: np.ndarray) -> list[np.ndarray]:
@@ -994,7 +958,8 @@ def enforce_rotational_symmetry_z(vertices: np.ndarray,
                                   periods: int,
                                   threshold: float = None,
                                   tol: float = 1e-8,
-                                  return_match: bool = False):
+                                  return_match: bool = False,
+                                  debug_show: bool = False):
     """
     Enforce Cn rotational symmetry around z-axis by strict open-sector clipping + replication.
 

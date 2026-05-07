@@ -14,6 +14,8 @@
 
 namespace cpgeo {
 
+const double MATHPI = 3.14159265358979323846;
+
 // ======================================================================
 // rot_z — rotate points around Z axis
 // ======================================================================
@@ -90,190 +92,222 @@ void tri_normal(const double* p0, const double* p1, const double* p2, double* n)
 // ======================================================================
 // zipper_stitch
 // ======================================================================
+
+namespace {
+
+/**
+ * DP cell used by zipper_stitch.
+ */
+struct ZCell {
+    double score = -1e30;   // best min-angle along the path so far
+    double n[3] = {0, 0, 0}; // unit normal of the last triangle
+    int pi = -1, pj = -1, pk = -1;  // predecessor state
+};
+
+/**
+ * Fallback: edge-length-based greedy stitching (no dihedral check).
+ */
+std::vector<int64_t> zipper_stitch_legacy(
+    std::span<const int64_t> right_ids,
+    std::span<const double> right_pts,
+    std::span<const int64_t> left_ids,
+    std::span<const double> left_pts)
+{
+    int64_t m = static_cast<int64_t>(right_ids.size());
+    int64_t n = static_cast<int64_t>(left_ids.size());
+    if (m < 2 || n < 2) return {};
+
+    std::vector<int64_t> tris;
+    int64_t i = 0, j = 0;
+
+    while (i < m - 1 || j < n - 1) {
+        if (i >= m - 1) {
+            tris.insert(tris.end(), {right_ids[i], left_ids[j + 1], left_ids[j]});
+            ++j;
+        } else if (j >= n - 1) {
+            tris.insert(tris.end(), {right_ids[i], right_ids[i + 1], left_ids[j]});
+            ++i;
+        } else {
+            const double* rp_i1 = &right_pts[(i + 1) * 3];
+            const double* lp_j  = &left_pts[j * 3];
+            const double* rp_i  = &right_pts[i * 3];
+            const double* lp_j1 = &left_pts[(j + 1) * 3];
+
+            double tmp[3];
+            vec_sub3(rp_i1, lp_j, tmp);
+            double ci = vec_norm3(tmp);
+            vec_sub3(rp_i, lp_j1, tmp);
+            double cj = vec_norm3(tmp);
+
+            if (ci <= cj) {
+                tris.insert(tris.end(), {right_ids[i], right_ids[i + 1], left_ids[j]});
+                ++i;
+            } else {
+                tris.insert(tris.end(), {right_ids[i], left_ids[j + 1], left_ids[j]});
+                ++j;
+            }
+        }
+    }
+    return tris;
+}
+
+} // anonymous namespace
+
 std::vector<int64_t> zipper_stitch(
     std::span<const int64_t> right_ids,
     std::span<const double> right_pts,
     std::span<const int64_t> left_ids,
     std::span<const double> left_pts,
-    double dihedral_angle_threshold,
-    bool debug)
+    double dihedral_angle_threshold)
 {
-    if (right_ids.size() < 2 || left_ids.size() < 2)
-        return {};
+    int64_t m = static_cast<int64_t>(right_ids.size());
+    int64_t n = static_cast<int64_t>(left_ids.size());
 
-    // Order chains
-    std::vector<int64_t> rid; std::vector<double> rpt;
-    std::vector<int64_t> lid; std::vector<double> lpt;
-    order_seam_chains(right_ids, right_pts, left_ids, left_pts, rid, rpt, lid, lpt);
+    if (m < 2 || n < 2) return {};
 
-    int64_t nr = static_cast<int64_t>(rid.size());
-    int64_t nl = static_cast<int64_t>(lid.size());
-    double max_dihedral = dihedral_angle_threshold * M_PI / 180.0;
+    double thresh = std::min(dihedral_angle_threshold * MATHPI / 180.0, MATHPI);
+    constexpr double NEG = -1e30;
 
-    auto min_angle = [](const double* p) -> double {
-        return min_angle_of_triangle(p, p + 3, p + 6);
+    // DP tables: k=0 → last move RIGHT, k=1 → last move LEFT
+    std::vector<ZCell> dp_right(m * n);
+    std::vector<ZCell> dp_left(m * n);
+
+    auto idx = [n](int64_t i, int64_t j) -> int64_t { return i * n + j; };
+
+    // ----- helpers for accessing coordinates -----
+    auto get_pt = [](std::span<const double> pts, int64_t idx) -> const double* {
+        return &pts[idx * 3];
     };
 
-    auto get_normal = [](const double* p, double* n) {
-        tri_normal(p, p + 3, p + 6, n);
-    };
+    // ----- first step (no previous triangle → no dihedral check) -----
+    if (m > 1) {
+        ZCell& c = dp_right[idx(1, 0)];
+        const double* p0 = get_pt(right_pts, 0);
+        const double* p1 = get_pt(right_pts, 1);
+        const double* p2 = get_pt(left_pts, 0);
+        c.score = min_angle_of_triangle(p0, p1, p2);
+        tri_normal(p0, p1, p2, c.n);
+        c.pi = 0; c.pj = 0; c.pk = -1;
+    }
 
-    auto dihedral_ok = [&](const double* prev_n, const double* curr_n) -> bool {
-        if (!prev_n || vec_norm3(prev_n) < 1e-12 || vec_norm3(curr_n) < 1e-12)
-            return true;
-        double angle = std::acos(std::clamp(vec_dot3(prev_n, curr_n), -1.0, 1.0));
-        return angle < max_dihedral;
-    };
+    if (n > 1) {
+        ZCell& c = dp_left[idx(0, 1)];
+        const double* p0 = get_pt(right_pts, 0);
+        const double* p1 = get_pt(left_pts, 1);
+        const double* p2 = get_pt(left_pts, 0);
+        c.score = min_angle_of_triangle(p0, p1, p2);
+        tri_normal(p0, p1, p2, c.n);
+        c.pi = 0; c.pj = 0; c.pk = -1;
+    }
 
-    // ---- Greedy baseline ----
-    std::vector<bool> greedy_path;
-    int64_t gi = 0, gj = 0;
-    double g_prev_n[3] = {0, 0, 0};
-    double* g_prev_n_ptr = nullptr;
-    double g_min_angle = std::numeric_limits<double>::infinity();
+    // ----- main DP loop -----
+    for (int64_t i = 0; i < m; ++i) {
+        for (int64_t j = 0; j < n; ++j) {
+            if (i == 0 && j == 0) continue;
 
-    while (gi < nr - 1 || gj < nl - 1) {
-        bool c_i = gi < nr - 1;
-        bool c_j = gj < nl - 1;
-        if (c_i && c_j) {
-            double pa[9] = {rpt[gi*3], rpt[gi*3+1], rpt[gi*3+2],
-                            rpt[(gi+1)*3], rpt[(gi+1)*3+1], rpt[(gi+1)*3+2],
-                            lpt[gj*3], lpt[gj*3+1], lpt[gj*3+2]};
-            double pb[9] = {rpt[gi*3], rpt[gi*3+1], rpt[gi*3+2],
-                            lpt[(gj+1)*3], lpt[(gj+1)*3+1], lpt[(gj+1)*3+2],
-                            lpt[gj*3], lpt[gj*3+1], lpt[gj*3+2]};
-            double ma = min_angle(pa);
-            double mb = min_angle(pb);
-            double na[3], nb[3];
-            get_normal(pa, na);
-            get_normal(pb, nb);
-            bool ok_a = dihedral_ok(g_prev_n_ptr, na);
-            bool ok_b = dihedral_ok(g_prev_n_ptr, nb);
+            // Process both k states at (i,j)
+            for (int k = 0; k < 2; ++k) {
+                ZCell* cur = (k == 0) ? &dp_right[idx(i, j)] : &dp_left[idx(i, j)];
+                if (cur->score <= NEG * 0.5) continue;
 
-            bool pick_a;
-            if (ok_a && ok_b) pick_a = ma >= mb;
-            else if (ok_a) pick_a = true;
-            else if (ok_b) pick_a = false;
-            else pick_a = ma >= mb;
+                double cur_n[3] = {cur->n[0], cur->n[1], cur->n[2]};
 
-            if (pick_a) {
-                greedy_path.push_back(true);
-                g_prev_n[0] = na[0]; g_prev_n[1] = na[1]; g_prev_n[2] = na[2];
-                g_prev_n_ptr = g_prev_n;
-                g_min_angle = std::min(g_min_angle, ma);
-                gi++;
-            } else {
-                greedy_path.push_back(false);
-                g_prev_n[0] = nb[0]; g_prev_n[1] = nb[1]; g_prev_n[2] = nb[2];
-                g_prev_n_ptr = g_prev_n;
-                g_min_angle = std::min(g_min_angle, mb);
-                gj++;
+                // ---- advance RIGHT → (i+1, j), k=0 ----
+                if (i + 1 < m) {
+                    const double* p0 = get_pt(right_pts, i);
+                    const double* p1 = get_pt(right_pts, i + 1);
+                    const double* p2 = get_pt(left_pts, j);
+
+                    double nn[3];
+                    tri_normal(p0, p1, p2, nn);
+
+                    double cos_a = vec_dot3(cur_n, nn);
+                    double d = std::acos(std::clamp(cos_a, -1.0, 1.0));
+
+                    if (d <= thresh + 1e-12) {
+                        double new_score = std::min(cur->score, min_angle_of_triangle(p0, p1, p2));
+                        ZCell& nx = dp_right[idx(i + 1, j)];
+                        if (new_score > nx.score) {
+                            nx.score = new_score;
+                            nx.n[0] = nn[0]; nx.n[1] = nn[1]; nx.n[2] = nn[2];
+                            nx.pi = i; nx.pj = j; nx.pk = k;
+                        }
+                    }
+                }
+
+                // ---- advance LEFT → (i, j+1), k=1 ----
+                if (j + 1 < n) {
+                    const double* p0 = get_pt(right_pts, i);
+                    const double* p1 = get_pt(left_pts, j + 1);
+                    const double* p2 = get_pt(left_pts, j);
+
+                    double nn[3];
+                    tri_normal(p0, p1, p2, nn);
+
+                    double cos_a = vec_dot3(cur_n, nn);
+                    double d = std::acos(std::clamp(cos_a, -1.0, 1.0));
+
+                    if (d <= thresh + 1e-12) {
+                        double new_score = std::min(cur->score, min_angle_of_triangle(p0, p1, p2));
+                        ZCell& nx = dp_left[idx(i, j + 1)];
+                        if (new_score > nx.score) {
+                            nx.score = new_score;
+                            nx.n[0] = nn[0]; nx.n[1] = nn[1]; nx.n[2] = nn[2];
+                            nx.pi = i; nx.pj = j; nx.pk = k;
+                        }
+                    }
+                }
             }
-        } else if (c_i) {
-            double pts[9] = {rpt[gi*3], rpt[gi*3+1], rpt[gi*3+2],
-                             rpt[(gi+1)*3], rpt[(gi+1)*3+1], rpt[(gi+1)*3+2],
-                             lpt[gj*3], lpt[gj*3+1], lpt[gj*3+2]};
-            greedy_path.push_back(true);
-            get_normal(pts, g_prev_n);
-            g_prev_n_ptr = g_prev_n;
-            g_min_angle = std::min(g_min_angle, min_angle(pts));
-            gi++;
-        } else {
-            double pts[9] = {rpt[gi*3], rpt[gi*3+1], rpt[gi*3+2],
-                             lpt[(gj+1)*3], lpt[(gj+1)*3+1], lpt[(gj+1)*3+2],
-                             lpt[gj*3], lpt[gj*3+1], lpt[gj*3+2]};
-            greedy_path.push_back(false);
-            get_normal(pts, g_prev_n);
-            g_prev_n_ptr = g_prev_n;
-            g_min_angle = std::min(g_min_angle, min_angle(pts));
-            gj++;
         }
     }
 
-    std::vector<bool> best_path = greedy_path;
-    double best_min_angle = g_min_angle;
+    // ----- pick best path to (m-1, n-1) -----
+    int best_k = -1;
+    double best_score = NEG;
 
-    // ---- DFS + branch-and-bound ----
-    constexpr int64_t kMaxNodes = 100000;
-    int64_t node_count = 0;
+    ZCell* final_right = &dp_right[idx(m - 1, n - 1)];
+    ZCell* final_left  = &dp_left[idx(m - 1, n - 1)];
 
-    std::function<void(int64_t, int64_t, std::vector<bool>&, const double*, double)> dfs;
-    dfs = [&](int64_t i, int64_t j, std::vector<bool>& path,
-              const double* prev_n, double cur_min) {
-        node_count++;
-        if (node_count > kMaxNodes) return;
+    if (final_right->score > best_score) {
+        best_score = final_right->score;
+        best_k = 0;
+    }
+    if (final_left->score > best_score) {
+        best_score = final_left->score;
+        best_k = 1;
+    }
 
-        if (i == nr - 1 && j == nl - 1) {
-            if (cur_min > best_min_angle) {
-                best_min_angle = cur_min;
-                best_path = path;
-            }
-            return;
-        }
+    if (best_k < 0) {
+        // No valid path under dihedral constraint → fall back
+        return zipper_stitch_legacy(right_ids, right_pts, left_ids, left_pts);
+    }
 
-        bool c_i = i < nr - 1;
-        bool c_j = j < nl - 1;
-
-        struct Candidate {
-            bool is_i;
-            int64_t ni, nj;
-            double n[3];
-            double ma;
-        };
-        std::vector<Candidate> candidates;
-
-        if (c_i) {
-            double pts[9] = {rpt[i*3], rpt[i*3+1], rpt[i*3+2],
-                             rpt[(i+1)*3], rpt[(i+1)*3+1], rpt[(i+1)*3+2],
-                             lpt[j*3], lpt[j*3+1], lpt[j*3+2]};
-            double n[3];
-            get_normal(pts, n);
-            if (dihedral_ok(prev_n, n)) {
-                candidates.push_back({true, i + 1, j, {n[0], n[1], n[2]}, min_angle(pts)});
-            }
-        }
-
-        if (c_j) {
-            double pts[9] = {rpt[i*3], rpt[i*3+1], rpt[i*3+2],
-                             lpt[(j+1)*3], lpt[(j+1)*3+1], lpt[(j+1)*3+2],
-                             lpt[j*3], lpt[j*3+1], lpt[j*3+2]};
-            double n[3];
-            get_normal(pts, n);
-            if (dihedral_ok(prev_n, n)) {
-                candidates.push_back({false, i, j + 1, {n[0], n[1], n[2]}, min_angle(pts)});
-            }
-        }
-
-        // Try better min-angle first → find good paths early → tighter pruning
-        // Use stable_sort to match Python's stable sort (preserves insertion order for ties)
-        std::stable_sort(candidates.begin(), candidates.end(),
-                  [](const Candidate& a, const Candidate& b) { return a.ma > b.ma; });
-
-        for (const auto& cand : candidates) {
-            double new_min = (cur_min <= cand.ma) ? cur_min : cand.ma;
-            if (new_min <= best_min_angle) continue;
-            path.push_back(cand.is_i);
-            dfs(cand.ni, cand.nj, path, cand.n, new_min);
-            path.pop_back();
-        }
-    };
-
-    std::vector<bool> init_path;
-    dfs(0, 0, init_path, nullptr, std::numeric_limits<double>::infinity());
-
-    // Reconstruct triangles
+    // ----- backtrack -----
     std::vector<int64_t> tris;
-    int64_t ci = 0, cj = 0;
-    for (bool pick_i : best_path) {
-        if (pick_i) {
-            tris.insert(tris.end(), {rid[ci], rid[ci + 1], lid[cj]});
-            ci++;
-        } else {
-            tris.insert(tris.end(), {rid[ci], lid[cj + 1], lid[cj]});
-            cj++;
+    int64_t i = m - 1, j = n - 1;
+    int k = best_k;
+
+    while (true) {
+        if (i == 0 && j == 0) break;
+
+        const ZCell* cur = (k == 0) ? &dp_right[idx(i, j)] : &dp_left[idx(i, j)];
+        int pi = cur->pi, pj = cur->pj, pk = cur->pk;
+
+        if (k == 0) {  // last move was RIGHT
+            tris.push_back(right_ids[i - 1]);
+            tris.push_back(right_ids[i]);
+            tris.push_back(left_ids[j]);
+        } else {       // last move was LEFT
+            tris.push_back(right_ids[i]);
+            tris.push_back(left_ids[j]);
+            tris.push_back(left_ids[j - 1]);
         }
+
+        i = pi; j = pj; k = pk;
     }
 
+    // Triangles were collected in reverse order
+    std::reverse(tris.begin(), tris.end());
     return tris;
 }
 
@@ -969,7 +1003,7 @@ std::pair<std::vector<double>, std::vector<int64_t>> insert_polar_quality_ring(
         double ang0 = std::atan2(verts[loop[0]*3+1], verts[loop[0]*3+0]);
         new_ring.resize(periods * 3);
         for (int i = 0; i < periods; ++i) {
-            double alpha = ang0 + i * (2.0 * M_PI / periods);
+            double alpha = ang0 + i * (2.0 * MATHPI / periods);
             new_ring[i*3+0] = r_new * std::cos(alpha);
             new_ring[i*3+1] = r_new * std::sin(alpha);
             new_ring[i*3+2] = z_new;
@@ -1185,7 +1219,7 @@ SectorResult extract_sector(
     for (int64_t i = 0; i < nv; ++i) {
         double x = vertices[i*3+0], y = vertices[i*3+1];
         r_xy[i] = std::sqrt(x*x + y*y);
-        theta[i] = std::fmod(std::atan2(y, x) + 2.0 * M_PI, 2.0 * M_PI);
+        theta[i] = std::fmod(std::atan2(y, x) + 2.0 * MATHPI, 2.0 * MATHPI);
     }
 
     // radial_ref
@@ -1206,7 +1240,7 @@ SectorResult extract_sector(
 
     PoleTriangles poles = find_axis_pole_triangles(vertices, faces_flat, num_faces);
 
-    int phase_samples = std::max(8, static_cast<int>(std::ceil(2.0 * M_PI / alpha)));
+    int phase_samples = std::max(8, static_cast<int>(std::ceil(2.0 * MATHPI / alpha)));
 
     SectorResult best;
     double best_key_val = std::numeric_limits<double>::infinity();
@@ -1220,7 +1254,7 @@ SectorResult extract_sector(
             std::vector<bool> keep(nv, false);
             int64_t keep_count = 0;
             for (int64_t i = 0; i < nv; ++i) {
-                double th = std::fmod(theta[i] - phase + 2.0 * M_PI, 2.0 * M_PI);
+                double th = std::fmod(theta[i] - phase + 2.0 * MATHPI, 2.0 * MATHPI);
                 if ((th > eps_try && th < alpha - eps_try) || r_xy[i] <= axis_eps) {
                     keep[i] = true;
                     keep_count++;
@@ -1266,7 +1300,7 @@ SectorResult extract_sector(
 
                 int64_t touch_left = 0, touch_right = 0;
                 for (int64_t vid : comp_ids) {
-                    double th = std::fmod(theta[vid] - phase + 2.0 * M_PI, 2.0 * M_PI);
+                    double th = std::fmod(theta[vid] - phase + 2.0 * MATHPI, 2.0 * MATHPI);
                     if (th <= side_band) touch_left++;
                     if ((alpha - th) <= side_band) touch_right++;
                 }
@@ -1315,7 +1349,7 @@ SectorResult extract_sector(
             // Compute local theta
             std::vector<double> theta_local(ids_comp.size());
             for (int64_t i = 0; i < static_cast<int64_t>(ids_comp.size()); ++i)
-                theta_local[i] = std::fmod(theta[ids_comp[i]] - phase + 2.0 * M_PI, 2.0 * M_PI);
+                theta_local[i] = std::fmod(theta[ids_comp[i]] - phase + 2.0 * MATHPI, 2.0 * MATHPI);
 
             // Find the best seam loop
             int64_t seam_idx = -1;
@@ -1569,7 +1603,7 @@ RotationalSymmetryResult enforce_rotational_symmetry_z(
     if (threshold < 0)
         threshold = mean_edge * 0.2;
 
-    double alpha = 2.0 * M_PI / periods;
+    double alpha = 2.0 * MATHPI / periods;
 
     SectorResult sector = extract_sector(vertices, faces, num_faces, alpha, threshold, tol);
 
