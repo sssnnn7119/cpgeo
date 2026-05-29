@@ -5,18 +5,9 @@
             "includePath": [
                 "${default}",
                 "${workspaceFolder}/src/cpp/include",
-                "${workspaceFolder}/include",
-                "${workspaceFolder}/src/cpp/src"
+                "${workspaceFolder}/include"
             ],
-            "defines": [
-                "_DEBUG",
-                "UNICODE",
-                "_UNICODE"
-            ],
-            "intelliSenseMode": "linux-gcc-x64",
-            "compilerPath": "/usr/bin/g++",
-            "cStandard": "c17",
-            "cppStandard": "c++23"
+            "defines": []
         }
     ],
     "version": 4

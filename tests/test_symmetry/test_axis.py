@@ -46,7 +46,6 @@ def topology_report(vertices: np.ndarray, faces: np.ndarray, name: str):
     face_sig = np.sort(f, axis=1)
     _, face_counts = np.unique(face_sig, axis=0, return_counts=True)
     duplicate_faces = int(np.sum(face_counts > 1))
-
     e01 = np.sort(f[:, [0, 1]], axis=1)
     e12 = np.sort(f[:, [1, 2]], axis=1)
     e20 = np.sort(f[:, [2, 0]], axis=1)

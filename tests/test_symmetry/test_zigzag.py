@@ -334,10 +334,12 @@ def test_zipper_stitch_skewed():
 
 
 if __name__ == "__main__":
-    filepath = Path(__file__).parent / 'data' / 'rotation_10.npz'
+    filepath = Path(__file__).parent / 'data' / 'rotation_13.npz'
     surf = cpgeo.CPGEO.load(filepath)
     print(f"PID: {os.getpid()}")
     surf.initialize()
+    surf.show()
+    # surf.refine_surface(seed_size=1.5)
 
     cp0 = surf.control_points.copy()
     faces = surf._cp_faces.copy()

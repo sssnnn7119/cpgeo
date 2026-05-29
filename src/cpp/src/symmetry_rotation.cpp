@@ -277,10 +277,10 @@ std::vector<int64_t> zipper_stitch(
         best_k = 1;
     }
 
-    if (best_k < 0) {
-        // No valid path under dihedral constraint → fall back
-        return zipper_stitch_legacy(right_ids, right_pts, left_ids, left_pts);
-    }
+    // if (best_k < 0) {
+    //     // No valid path under dihedral constraint → fall back
+    //     return zipper_stitch_legacy(right_ids, right_pts, left_ids, left_pts);
+    // }
 
     // ----- backtrack -----
     std::vector<int64_t> tris;

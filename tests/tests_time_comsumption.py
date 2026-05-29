@@ -61,15 +61,15 @@ def compute_mapped_points(indices_cps, indices_pts, weights, controlpoints, num_
     
     return mapped_points
 
-times_iterations = 50
+times_iterations = 100
 
 with timer("Mapping time (C++)"):
     for _ in range(times_iterations):
         mapped_points_cpp = cpgeo.capi.get_mapped_points(indices_cps, indices_pts, w, controlpoints, points.shape[0])
 
-with timer("Mapping time (Plain Python)"):
-    for _ in range(times_iterations):
-        mapped_points_plain = compute_mapped_points(indices_cps, indices_pts, w, controlpoints, points.shape[0])
+# with timer("Mapping time (Plain Python)"):
+#     for _ in range(times_iterations):
+#         mapped_points_plain = compute_mapped_points(indices_cps, indices_pts, w, controlpoints, points.shape[0])
 
 # 验证结果一致性
 print("\nVerifying results consistency:")

@@ -778,7 +778,7 @@ def _extract_sector(vertices: np.ndarray,
         eps_try = float(ang_eps)
         for _ in range(18):
             theta_shift = np.mod(theta - phase, 2.0 * np.pi)
-            keep = ((theta_shift > eps_try) & (theta_shift < (alpha - eps_try))) | (r_xy <= axis_eps)
+            keep = ((theta_shift > eps_try) & (theta_shift < (alpha - eps_try)))# | (r_xy <= axis_eps)
             ids = np.flatnonzero(keep)
             if ids.size == 0:
                 eps_try *= 0.5

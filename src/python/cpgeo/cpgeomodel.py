@@ -70,7 +70,11 @@ class CPGEO:
         Args:
             query_points (np.ndarray): The query points, shape (N, 3).
         Returns:
-            np.ndarray: The weights of control points for each query point, shape (N, V).
+            indices_cps (np.ndarray): The indices of control points influencing each query point, shape (N, V).
+            indices_pts (np.ndarray): The indices of knot points influencing each query point, shape (N, V).
+            w (np.ndarray): The weights of control points for each query point, shape (N, V).
+            wdu (np.ndarray): The first derivative of weights, shape (2, N, V), optional if derivative >= 1.
+            wdu2 (np.ndarray): The second derivative of weights, shape (2, 2, N, V), optional if derivative == 2.
         """
         
         indices_cps, indices_pts = capi.get_space_tree_query(self._space_tree, query_points)
@@ -224,6 +228,14 @@ class CPGEO:
         )
 
         new_faces = new_faces[:, [0, 2, 1]]
+
+
+        index_remain = np.unique(new_faces.flatten())
+
+        new_vertices = new_vertices[index_remain]
+        index_mapping = np.zeros((index_remain.max() + 1,), dtype=int)
+        index_mapping[index_remain] = np.arange(len(index_remain))
+        new_faces = index_mapping[new_faces]
 
         return new_vertices, new_faces    
 

@@ -37,8 +37,11 @@ def _find_dll() -> Path:
 
 
 # Load the DLL
-_dll_path = _find_dll()
-_lib = ctypes.CDLL(str(_dll_path))
+try:
+    _dll_path = _find_dll()
+    _lib = ctypes.CDLL(str(_dll_path))
+except Exception as e:
+    raise RuntimeError(f"Failed to load cpgeo library: {e}. Please first run 'compile.py' to build the library.") from e
 
 
 # ==================== C API Function Declarations ====================

@@ -798,7 +798,7 @@ void vertice_smoothing(
 
     const int max_newton_iters = 500;
     const double loss_tol = 1e-6;
-    const double grad_tol = 1e-2;
+    const double grad_tol = 1e-1;
     
     double prev_loss = std::numeric_limits<double>::infinity();
 

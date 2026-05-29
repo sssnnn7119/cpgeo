@@ -222,10 +222,12 @@ def show_surf(vertices: np.ndarray, faces: np.ndarray):
 
 
 if __name__ == "__main__":
-    filepath = Path(__file__).parent / 'data' / 'rotation_10.npz'
+    filepath = Path(__file__).parent / 'data' / 'rotation_13.npz'
     surf = cpgeo.CPGEO.load(filepath)
     print(f"PID: {os.getpid()}")
     surf.initialize()
+
+    # surf.show_control_points()
 
     cp0 = surf.control_points.copy()
     faces = surf._cp_faces.copy()
@@ -246,8 +248,8 @@ if __name__ == "__main__":
         v_py, f_py = py_rot_sym(cp0, faces, periods=periods, tol=1e-8, debug_show=True)
 
     # ---- C++ version ----
-    with Timer(f"{name} C++ rotational symmetry C{periods}"):
-        v_cpp, f_cpp = capi.rotational_symmetry_z(cp0, faces, periods=periods, tol=1e-8)
+    # with Timer(f"{name} C++ rotational symmetry C{periods}"):
+    #     v_cpp, f_cpp = capi.rotational_symmetry_z(cp0, faces, periods=periods, tol=1e-8)
 
     # ---- Plotting (optional) ----
     import pyvista as pv
@@ -255,17 +257,39 @@ if __name__ == "__main__":
 
     plotter.subplot(0, 0)
     surf_py = pv.PolyData(v_py, np.hstack([np.full((f_py.shape[0], 1), 3, dtype=np.int64), f_py]))
+    surf_py.compute_normals(cell_normals=True, point_normals=False, inplace=True)
+    cell_centers_py = surf_py.cell_centers()
+    cell_centers_py.set_active_vectors('Normals')
     plotter.add_mesh(surf_py, show_edges=True, color='lightblue', label="Python Result")
+    glyph_py = cell_centers_py.glyph(orient='Normals', scale=False, factor=0.05, geom=pv.Arrow())
+    plotter.add_mesh(glyph_py, color='blue', label='Python normals')
     plotter.add_legend()
 
-    plotter.subplot(0, 1)
-    surf_cpp = pv.PolyData(v_cpp, np.hstack([np.full((f_cpp.shape[0], 1), 3, dtype=np.int64), f_cpp]))
-    plotter.add_mesh(surf_cpp, show_edges=True, color='salmon', label="C++ Result")
+    # plotter.subplot(0, 1)
+    # surf_cpp = pv.PolyData(v_cpp, np.hstack([np.full((f_cpp.shape[0], 1), 3, dtype=np.int64), f_cpp]))
+    # surf_cpp.compute_normals(cell_normals=True, point_normals=False, inplace=True)
+    # cell_centers_cpp = surf_cpp.cell_centers()
+    # cell_centers_cpp.set_active_vectors('Normals')
+    # plotter.add_mesh(surf_cpp, show_edges=True, color='salmon', label="C++ Result")
+    # glyph_cpp = cell_centers_cpp.glyph(orient='Normals', scale=False, factor=0.05, geom=pv.Arrow())
+    # plotter.add_mesh(glyph_cpp, color='red', label='C++ normals')
 
     plotter.link_views()
     plotter.view_isometric()
     plotter.add_legend()
     plotter.show()
+
+    # surf.control_points = v_cpp
+    # surf._cp_faces = f_cpp
+    # surf.initialize()
+    # surf.show()
+
+    # ---- Validation ----
+    if np.abs(v_cpp - v_py).max() > 1e-6:
+        raise ValueError("Validation failed: C++ and Python results differ significantly")
+    
+    if not np.array_equal(f_cpp, f_py):
+        raise ValueError("Validation failed: C++ and Python face connectivity differ")
 
     print("\nAll checks passed!")
 
