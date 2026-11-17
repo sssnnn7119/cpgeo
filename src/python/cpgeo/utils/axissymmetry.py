@@ -117,12 +117,12 @@ def enforce_axial_symmetry(vertices: np.ndarray,
 
     elif plane == "xz":
         v = v[:, [1, 0, 2]]
-        faces_all, verts_all = _enforce_axial_symmetry_yz_core(v, f, threshold=threshold)
+        verts_all, faces_all = _enforce_axial_symmetry_yz_core(v, f, threshold=threshold)
         verts_all = verts_all[:, [1, 0, 2]]
 
     elif plane == "xy":
         v = v[:, [2, 1, 0]]
-        faces_all, verts_all = _enforce_axial_symmetry_yz_core(v, f, threshold=threshold)
+        verts_all, faces_all = _enforce_axial_symmetry_yz_core(v, f, threshold=threshold)
         verts_all = verts_all[:, [2, 1, 0]]
 
     return verts_all, faces_all
