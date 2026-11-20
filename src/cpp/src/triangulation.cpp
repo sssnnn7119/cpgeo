@@ -10,7 +10,7 @@
 namespace cpgeo {
 
 // Custom hash for edge pairs
-struct EdgeHash {
+struct DelaunayEdgeHash {
     std::size_t operator()(const std::pair<int, int>& edge) const noexcept {
         return std::hash<int>{}(edge.first) ^ (std::hash<int>{}(edge.second) << 1);
     }
@@ -51,22 +51,16 @@ bool DelaunayTriangulation::isInCircumcircle(const Triangle& tri, int point_idx)
     auto [x1, y1] = getNode(tri[1]);
     auto [x2, y2] = getNode(tri[2]);
     
-    // Calculate circumcenter
-    double d = 2.0 * (x0 * (y1 - y2) + x1 * (y2 - y0) + x2 * (y0 - y1));
-    if (std::abs(d) < 1e-10) return false;  // Degenerate triangle
-    
-    double cx = ((x0*x0 + y0*y0) * (y1 - y2) + (x1*x1 + y1*y1) * (y2 - y0) + (x2*x2 + y2*y2) * (y0 - y1)) / d;
-    double cy = ((x0*x0 + y0*y0) * (x2 - x1) + (x1*x1 + y1*y1) * (x0 - x2) + (x2*x2 + y2*y2) * (x1 - x0)) / d;
-    
-    // Calculate radius squared
-    double dx = x0 - cx;
-    double dy = y0 - cy;
-    double r_squared = dx*dx + dy*dy;
-    
-    // Check if point is inside
-    dx = x - cx;
-    dy = y - cy;
-    return (dx*dx + dy*dy) < r_squared;
+    // Triangles are counter-clockwise. Evaluate the in-circle determinant
+    // relative to the inserted point so tiny triangles retain their scale.
+    const long double px = x, py = y;
+    const long double ax = x0 - px, ay = y0 - py;
+    const long double bx = x1 - px, by = y1 - py;
+    const long double cx = x2 - px, cy = y2 - py;
+    const long double det = (ax * ax + ay * ay) * (bx * cy - by * cx)
+                          + (bx * bx + by * by) * (cx * ay - cy * ax)
+                          + (cx * cx + cy * cy) * (ax * by - ay * bx);
+    return det > 0;
 }
 
 void DelaunayTriangulation::bowyerWatsonStep(int node_idx) {
@@ -121,7 +115,7 @@ void DelaunayTriangulation::bowyerWatsonStep(int node_idx) {
     if (bad_triangles.empty()) return;
 
     // Find the boundary edges (edges that appear only once)
-    std::unordered_map<std::pair<int, int>, int, EdgeHash> edge_count;
+    std::unordered_map<std::pair<int, int>, int, DelaunayEdgeHash> edge_count;
     edge_count.reserve(bad_triangles.size() * 3);
     
     for (size_t tri_idx : bad_triangles) {

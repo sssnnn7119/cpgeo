@@ -34,4 +34,9 @@ std::vector<int> mesh_optimize_by_edge_flipping(
     int max_iterations = 100
 );
 
+// Also preserve the winding of every edited triangle on the reference sphere.
+std::vector<int> mesh_optimize_by_edge_flipping(
+    std::span<const double> vertices, int vertices_dim, std::span<const int> faces_in,
+    int max_iterations, std::span<const double> reference_sphere);
+
 } // namespace cpgeo

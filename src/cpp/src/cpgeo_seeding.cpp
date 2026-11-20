@@ -4,6 +4,7 @@
 #include <fstream>
 #include <cmath>
 #include <omp.h>
+#include <stdexcept>
 
 namespace cpgeo {
 
@@ -61,147 +62,172 @@ static double triangleArea(
     return area;
 }
 
-static std::vector<int> insert_delete_points(
-    std::vector<double>& vertices_sphere,
-    std::span<const double> control_points,
-    SpaceTree& tree,
-    double seed_size
-){
-
-    const int MAX_ITER = 10; // safety guard to avoid pathological infinite loops
-    int iter_count = 0;
-    std::vector<int> faces;
-
-    while (true) {
-        if (++iter_count > MAX_ITER) {
-            // safety: stop if too many iterations
-            break;
-        }
-
-        bool any_change = false;
-
-        // update stored points each iteration to reflect modifications
-        SphereTriangulation triangulator(vertices_sphere);
-        triangulator.triangulate();
-        faces.clear();
-        faces.resize(triangulator.size() * 3);
-        triangulator.getTriangleIndices(faces);
-
-        if (faces.empty()) {
-            break;
-        }
-
-        auto r = map_points_batch(vertices_sphere, tree, control_points);
-
-        // refine mesh by edge flipping
-        faces = mesh_optimize_by_edge_flipping(r, 3, faces, 100);
-
-        // Edge-based small boundary edge merging + large edge splitting (batched)
-        double min_edge_length = seed_size * 0.5;
-        double max_edge_length = seed_size * 1.5;
-        auto edges = extractEdgesWithNumber(faces);
-
-        const int num_points = static_cast<int>(vertices_sphere.size() / 3);
-        std::vector<bool> delete_flag(num_points, false);
-        std::vector<std::array<double, 3>> insert_points;
-
-        insert_points.reserve(edges.size());
-
-        for (const auto& [edge, count] : edges) {
-            int a = edge.first;
-            int b = edge.second;
-
-            // use mapped coordinates to measure current edge length
-            std::span<double, 3> ma(r.data() + a * 3, 3);
-            std::span<double, 3> mb(r.data() + b * 3, 3);
-
-            double dx = ma[0] - mb[0];
-            double dy = ma[1] - mb[1];
-            double dz = ma[2] - mb[2];
-            double edge_length = std::sqrt(dx * dx + dy * dy + dz * dz);
-
-            // 1) Edge detection: small boundary edges merging (batch)
-            if (edge_length < min_edge_length) {
-                if (a > b) std::swap(a, b);
-
-                if (delete_flag[a] || delete_flag[b]) {
-                    // one of the endpoints is already marked for deletion
-                    continue;
-                }
-
-                std::span<double, 3> va(vertices_sphere.data() + a * 3, 3);
-                std::span<double, 3> vb(vertices_sphere.data() + b * 3, 3);
-
-                std::array<double, 3> new_point{ (va[0] + vb[0]) / 2.0, (va[1] + vb[1]) / 2.0, (va[2] + vb[2]) / 2.0 };
-                double norm = std::sqrt(new_point[0] * new_point[0] + new_point[1] * new_point[1] + new_point[2] * new_point[2]);
-                if (norm > 0) { new_point[0] /= norm; new_point[1] /= norm; new_point[2] /= norm; }
-
-                delete_flag[a] = true;
-                delete_flag[b] = true;
-                insert_points.push_back(new_point);
-                any_change = true;
-                continue;
-            }
-
-            // 2) Edge detection: large boundary edges splitting (batch)
-            if (edge_length > max_edge_length) {
-                if (a > b) std::swap(a, b);
-
-                if (delete_flag[a] || delete_flag[b]) {
-                    // one of the endpoints is already marked for deletion
-                    continue;
-                }
-
-                std::span<double, 3> va(vertices_sphere.data() + a * 3, 3);
-                std::span<double, 3> vb(vertices_sphere.data() + b * 3, 3);
-
-                std::array<double, 3> new_point{ (va[0] + vb[0]) / 2.0, (va[1] + vb[1]) / 2.0, (va[2] + vb[2]) / 2.0 };
-                double norm = std::sqrt(new_point[0] * new_point[0] + new_point[1] * new_point[1] + new_point[2] * new_point[2]);
-                if (norm > 0) { new_point[0] /= norm; new_point[1] /= norm; new_point[2] /= norm; }
-
-                insert_points.push_back(new_point);
-                any_change = true;
-                continue;
-            }
-        }
-
-        
-        // if nothing changed this round, we're done
-        if (!any_change) break;
-        else {
-            std::vector<double> new_vertices;
-            new_vertices.reserve(vertices_sphere.size() + insert_points.size() * 3);
-
-            for (int i = 0; i < num_points; i++) {
-                if (delete_flag[i]) continue;
-                new_vertices.push_back(vertices_sphere[i * 3 + 0]);
-                new_vertices.push_back(vertices_sphere[i * 3 + 1]);
-                new_vertices.push_back(vertices_sphere[i * 3 + 2]);
-            }
-
-            for (const auto& p : insert_points) {
-                new_vertices.push_back(p[0]);
-                new_vertices.push_back(p[1]);
-                new_vertices.push_back(p[2]);
-            }
-
-            vertices_sphere = std::move(new_vertices);
-        }
-
+static bool can_collapse(int a, int b, const std::array<double, 3>& midpoint,
+                         const std::vector<std::vector<int>>& neighbors,
+                         const std::vector<std::vector<int>>& incident_faces,
+                         const std::vector<double>& vertices, const std::vector<int>& faces) {
+    // On a closed triangular manifold the two opposite vertices must be the
+    // only common neighbors. Collapsing a tetrahedron would duplicate a face.
+    if (neighbors[a].size() == 3 && neighbors[b].size() == 3)
+        return false;
+    int common = 0;
+    for (int v : neighbors[a]) {
+        if (std::find(neighbors[b].begin(), neighbors[b].end(), v) != neighbors[b].end())
+            ++common;
     }
-    
-    // // update stored points each iteration to reflect modifications
+    if (common != 2)
+        return false;
+
+    for (int endpoint : {a, b}) {
+        for (int face : incident_faces[endpoint]) {
+            const int* tri = faces.data() + 3 * face;
+            int i = std::find(tri, tri + 3, endpoint) - tri;
+            int v = tri[(i + 1) % 3], w = tri[(i + 2) % 3];
+            if (v == a || v == b || w == a || w == b)
+                continue;
+            const double* p = vertices.data() + 3 * v;
+            const double* q = vertices.data() + 3 * w;
+            double before = sphere_orientation(vertices.data() + 3 * endpoint, p, q);
+            double after = sphere_orientation(midpoint.data(), p, q);
+            if (!(before * after > 0.0))
+                return false;
+        }
+    }
+    return true;
+}
+
+static std::vector<int> insert_delete_points(std::vector<double>& vertices_sphere,
+                                             std::span<const double> control_points, SpaceTree& tree,
+                                             double seed_size) {
+    if (!(seed_size > 0.0) || !std::isfinite(seed_size))
+        throw std::invalid_argument("seed_size must be finite and positive");
+
     SphereTriangulation triangulator(vertices_sphere);
     triangulator.triangulate();
-    faces.clear();
-    faces.resize(triangulator.size() * 3);
+    std::vector<int> faces(triangulator.size() * 3);
     triangulator.getTriangleIndices(faces);
 
-    auto r = map_points_batch(vertices_sphere, tree, control_points);
+    // A split batch can grow the mesh by at most half its current vertices.
+    // Pure coarsening rounds strictly reduce the vertex count.
+    constexpr int max_split_rounds = 10;
+    int split_rounds = 0;
+    while (!faces.empty()) {
+        auto mapped = map_points_batch(vertices_sphere, tree, control_points);
+        faces = mesh_optimize_by_edge_flipping(mapped, 3, faces, 100, vertices_sphere);
+        if (split_rounds == max_split_rounds)
+            break;
 
-    // refine mesh by edge flipping
-    faces = mesh_optimize_by_edge_flipping(r, 3, faces, 10000);
-    
+        const int n = static_cast<int>(vertices_sphere.size() / 3);
+        std::vector<std::vector<int>> neighbors(n), incident_faces(n);
+        for (size_t i = 0; i < faces.size(); ++i)
+            incident_faces[faces[i]].push_back(i / 3);
+
+        struct Candidate {
+            double length;
+            int a, b;
+        };
+        std::vector<Candidate> short_edges, long_edges;
+        for (const auto& [edge, count] : extractEdgesWithNumber(faces)) {
+            auto [a, b] = edge;
+            neighbors[a].push_back(b);
+            neighbors[b].push_back(a);
+            if (count != 2)
+                continue;
+            const double* p = mapped.data() + 3 * a;
+            const double* q = mapped.data() + 3 * b;
+            double length = std::hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+            if (length < 0.5 * seed_size)
+                short_edges.push_back({length, a, b});
+            if (length > 1.5 * seed_size)
+                long_edges.push_back({length, a, b});
+        }
+        auto by_length = [](const Candidate& x, const Candidate& y) {
+            return std::tie(x.length, x.a, x.b) < std::tie(y.length, y.a, y.b);
+        };
+        std::sort(short_edges.begin(), short_edges.end(), by_length);
+        std::sort(long_edges.rbegin(), long_edges.rend(), by_length);
+
+        std::vector<bool> locked(n, false);
+        std::vector<int> collapse_to(n, -1);
+        std::unordered_map<std::pair<int, int>, int, EdgeHash> split_at;
+        bool changed = false;
+        auto apply_batch = [&](const std::vector<Candidate>& candidates, bool collapse) {
+            for (const auto& [length, a, b] : candidates) {
+                if (locked[a] || locked[b])
+                    continue;
+                std::array<double, 3> mid;
+                for (int d = 0; d < 3; ++d)
+                    mid[d] = vertices_sphere[3 * a + d] + vertices_sphere[3 * b + d];
+                double norm = std::hypot(mid[0], mid[1], mid[2]);
+                if (!(norm > 1e-12))
+                    continue;
+                for (double& x : mid)
+                    x /= norm;
+
+                if (collapse) {
+                    if (!can_collapse(a, b, mid, neighbors, incident_faces, vertices_sphere, faces))
+                        continue;
+                    collapse_to[b] = a;
+                    std::copy(mid.begin(), mid.end(), vertices_sphere.begin() + 3 * a);
+                    for (int v : neighbors[a])
+                        locked[v] = true;
+                    for (int v : neighbors[b])
+                        locked[v] = true;
+                } else {
+                    split_at[{a, b}] = static_cast<int>(vertices_sphere.size() / 3);
+                    vertices_sphere.insert(vertices_sphere.end(), mid.begin(), mid.end());
+                }
+                locked[a] = locked[b] = true;
+                changed = true;
+            }
+        };
+        apply_batch(short_edges, true);
+        apply_batch(long_edges, false);
+        if (!changed)
+            break;
+        if (!split_at.empty())
+            ++split_rounds;
+
+        // A face can contain at most one selected split. Both adjacent faces
+        // use the same midpoint and keep their original winding.
+        std::vector<int> next_faces;
+        next_faces.reserve(faces.size() + 6 * split_at.size());
+        for (size_t i = 0; i < faces.size(); i += 3) {
+            std::array<int, 3> tri{faces[i], faces[i + 1], faces[i + 2]};
+            bool split = false;
+            for (int j = 0; j < 3; ++j) {
+                int a = tri[j], b = tri[(j + 1) % 3], c = tri[(j + 2) % 3];
+                auto it = split_at.find(std::minmax(a, b));
+                if (it == split_at.end())
+                    continue;
+                next_faces.insert(next_faces.end(), {a, it->second, c, it->second, b, c});
+                split = true;
+                break;
+            }
+            if (split)
+                continue;
+            for (int& v : tri)
+                if (collapse_to[v] >= 0)
+                    v = collapse_to[v];
+            if (tri[0] != tri[1] && tri[1] != tri[2] && tri[2] != tri[0])
+                next_faces.insert(next_faces.end(), tri.begin(), tri.end());
+        }
+
+        std::vector<int> new_index(vertices_sphere.size() / 3);
+        int kept = 0;
+        for (int v = 0; v < static_cast<int>(new_index.size()); ++v) {
+            if (v < n && collapse_to[v] >= 0)
+                continue;
+            new_index[v] = kept;
+            for (int d = 0; d < 3; ++d)
+                vertices_sphere[3 * kept + d] = vertices_sphere[3 * v + d];
+            ++kept;
+        }
+        vertices_sphere.resize(3 * kept);
+        for (int& v : next_faces)
+            v = new_index[v];
+        faces = std::move(next_faces);
+    }
     return faces;
 }
 
@@ -918,26 +944,6 @@ std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
         }
         faces = std::move(faces_new);
     }
-
-    // // final insert/delete points
-    // faces = insert_delete_points(vertices_sphere, control_points, tree, seed_size);
-
-    // // final vertex smoothing
-    // vertice_smoothing(vertices_sphere, faces, control_points, tree);
-
-    // auto tri = SphereTriangulation(vertices_sphere);
-    // tri.triangulate();
-    // faces.clear();
-    // faces.resize(tri.size() * 3);
-    // tri.getTriangleIndices(faces);
-
-    // r = map_points_batch(vertices_sphere, tree, control_points);
-    // faces = mesh_optimize_by_edge_flipping(
-    //     r,
-    //     3,
-    //     faces,
-    //     10000
-    // );
 
     return {vertices_sphere, faces};
 }
