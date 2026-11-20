@@ -62,3 +62,25 @@ def test_spherical_triangulation_retains_close_vertices():
     assert len(np.unique(faces)) == len(vertices)
     assert len(faces) == 2 * len(vertices) - 4
     assert np.all(capi.get_mesh_edges(faces)[:, 2] == 2)
+
+
+def test_smoothing_decreases_edge_loss_within_volume_tolerance(surface):
+    knots, controls, tree = surface
+    initial, faces = capi.uniformly_mesh(knots, controls, tree, seed_size=4, max_iterations=0)
+    smoothed, _ = capi.uniformly_mesh(knots, controls, tree, seed_size=4, max_iterations=1)
+    # The outer remesher may flip edges after smoothing. Compare the objective
+    # on the same connectivity the Newton iteration used.
+    edges = capi.get_mesh_edges(faces)[:, :2]
+
+    def edge_loss(points):
+        mapped = capi.map_points(points, tree, controls)
+        lengths = np.linalg.norm(mapped[edges[:, 0]] - mapped[edges[:, 1]], axis=1)
+        return np.sum((lengths + 1e-8) ** 4)
+
+    def volume(points):
+        a, b, c = points[faces].transpose(1, 0, 2)
+        return abs(np.einsum("ij,ij->", a, np.cross(b, c))) / 6
+
+    np.testing.assert_allclose(np.linalg.norm(smoothed, axis=1), 1.0)
+    assert edge_loss(smoothed) < edge_loss(initial)
+    assert abs(volume(smoothed) / volume(initial) - 1.0) < 0.05

@@ -97,11 +97,11 @@ Tensor2D::Tensor2D(int rows, int cols, std::span<const double> data)
     : Tensor(std::array<int, 2>{rows, cols}, data) {}
 
 double& Tensor2D::at(int row, int col) {
-    return this->operator[]({row, col});
+    return data_[static_cast<size_t>(row) * shape_[1] + col];
 }
 
 const double& Tensor2D::at(int row, int col) const {
-    return this->operator[]({row, col});
+    return data_[static_cast<size_t>(row) * shape_[1] + col];
 }
 
 std::span<double> Tensor2D::row(int index) {
@@ -117,11 +117,11 @@ Tensor3D::Tensor3D(int dim1, int dim2, int dim3, std::span<const double> data)
     : Tensor(std::array<int, 3>{dim1, dim2, dim3}, data) {}
 
 double& Tensor3D::at(int i, int j, int k) {
-    return this->operator[]({i, j, k});
+    return data_[(static_cast<size_t>(i) * shape_[1] + j) * shape_[2] + k];
 }
 
 const double& Tensor3D::at(int i, int j, int k) const {
-    return this->operator[]({i, j, k});
+    return data_[(static_cast<size_t>(i) * shape_[1] + j) * shape_[2] + k];
 }
 
 std::vector<std::span<double>> Tensor3D::slice(int index) {
@@ -143,11 +143,11 @@ TensorView2D::TensorView2D(int rows, int cols, std::span<double> data)
     : TensorView(std::array<int, 2>{rows, cols}, data) {}
 
 double& TensorView2D::at(int row, int col) {
-    return this->operator[]({row, col});
+    return data_[static_cast<size_t>(row) * shape_[1] + col];
 }
 
 const double& TensorView2D::at(int row, int col) const {
-    return this->operator[]({row, col});
+    return data_[static_cast<size_t>(row) * shape_[1] + col];
 }
 
 std::span<double> TensorView2D::row(int index) {
@@ -160,11 +160,11 @@ TensorView3D::TensorView3D(int dim1, int dim2, int dim3, std::span<double> data)
     : TensorView(std::array<int, 3>{dim1, dim2, dim3}, data) {}
 
 double& TensorView3D::at(int i, int j, int k) {
-    return this->operator[]({i, j, k});
+    return data_[(static_cast<size_t>(i) * shape_[1] + j) * shape_[2] + k];
 }
 
 const double& TensorView3D::at(int i, int j, int k) const {
-    return this->operator[]({i, j, k});
+    return data_[(static_cast<size_t>(i) * shape_[1] + j) * shape_[2] + k];
 }
 
 std::vector<std::span<double>> TensorView3D::slice(int index) {
