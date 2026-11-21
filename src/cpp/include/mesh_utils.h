@@ -11,6 +11,13 @@
 // edges method
 namespace cpgeo {
 
+// Signed volume of the tetrahedron formed by a spherical triangle and the origin.
+inline double sphere_orientation(const double* a, const double* b, const double* c) {
+    return a[0] * (b[1]*c[2] - b[2]*c[1])
+         + a[1] * (b[2]*c[0] - b[0]*c[2])
+         + a[2] * (b[0]*c[1] - b[1]*c[0]);
+}
+
 // Hash function for an edge represented as a pair of vertex indices
 // 使用int64拼接两个int32，更鲁棒且无冲突（假设顶点索引<2^31）
 struct EdgeHash {

@@ -350,6 +350,8 @@ def get_sphere_triangulation(sphere_points: np.ndarray) -> np.ndarray:
         raise ValueError("sphere_points must be a 1D array with length multiple of 3")
     
     num_points = len(sphere_points) // 3
+    if num_points < 4:
+        return np.empty((0, 3), dtype=np.int32)
     points_flat = np.ascontiguousarray(sphere_points, dtype=np.float64)
     points_ptr = points_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     
@@ -361,6 +363,9 @@ def get_sphere_triangulation(sphere_points: np.ndarray) -> np.ndarray:
         ctypes.byref(num_triangles)
     )
     
+    if not handle:
+        raise ValueError("Could not triangulate the supplied points into a closed spherical mesh.")
+
     triangles = np.zeros(num_triangles.value * 3, dtype=np.int32)
     triangles_ptr = triangles.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
     
@@ -830,6 +835,9 @@ def uniformly_mesh(init_vertices: np.ndarray, control_points: np.ndarray, tree_h
     Returns:
         Tuple[np.ndarray, np.ndarray]: (vertices (num_vertices,3), faces (num_faces,3))
     """
+    if not np.isfinite(seed_size) or seed_size <= 0:
+        raise ValueError("seed_size must be finite and positive")
+
     init_flat = np.ascontiguousarray(init_vertices.flatten(), dtype=np.float64)
     control_flat = np.ascontiguousarray(control_points.flatten(), dtype=np.float64)
 
@@ -840,7 +848,7 @@ def uniformly_mesh(init_vertices: np.ndarray, control_points: np.ndarray, tree_h
     out_num_vertices = ctypes.c_int()
     out_num_faces = ctypes.c_int()
 
-    _lib.cpgeo_uniformly_mesh_compute(
+    status = _lib.cpgeo_uniformly_mesh_compute(
         init_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
         ctypes.c_int(num_vertices),
         control_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
@@ -852,6 +860,8 @@ def uniformly_mesh(init_vertices: np.ndarray, control_points: np.ndarray, tree_h
         ctypes.byref(out_num_faces)
     )
 
+    if status != 0 and num_vertices > 0 and num_control > 0:
+        raise RuntimeError("Uniform remeshing failed. Check the input sphere and remeshing parameters.")
     if out_num_vertices.value <= 0 or out_num_faces.value <= 0:
         return np.zeros((0,3)), np.zeros((0,3), dtype=np.int32)
 

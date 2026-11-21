@@ -109,7 +109,9 @@ void SphereTriangulation::triangulate() {
     }
 
     // Get the boundary edges from northern hemisphere triangulation
-    auto boundary_edges = extractBoundaryLoops(std::span<const int>(triangles_north.data(), triangles_north.size()))[0];
+    const auto loops = extractBoundaryLoops(triangles_north);
+
+    const auto& boundary_edges = loops.front();
 
     // Create UV points for southern hemisphere including boundary points
     std::vector<double> uv_south_part;

@@ -2,6 +2,9 @@
     "configurations": [
         {
             "name": "Linux",
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+            "compilerPath": "/usr/bin/g++",
+            "cppStandard": "c++23",
             "includePath": [
                 "${default}",
                 "${workspaceFolder}/src/cpp/include",

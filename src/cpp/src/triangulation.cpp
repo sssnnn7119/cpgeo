@@ -10,7 +10,7 @@
 namespace cpgeo {
 
 // Custom hash for edge pairs
-struct EdgeHash {
+struct DelaunayEdgeHash {
     std::size_t operator()(const std::pair<int, int>& edge) const noexcept {
         return std::hash<int>{}(edge.first) ^ (std::hash<int>{}(edge.second) << 1);
     }
@@ -51,22 +51,16 @@ bool DelaunayTriangulation::isInCircumcircle(const Triangle& tri, int point_idx)
     auto [x1, y1] = getNode(tri[1]);
     auto [x2, y2] = getNode(tri[2]);
     
-    // Calculate circumcenter
-    double d = 2.0 * (x0 * (y1 - y2) + x1 * (y2 - y0) + x2 * (y0 - y1));
-    if (std::abs(d) < 1e-10) return false;  // Degenerate triangle
-    
-    double cx = ((x0*x0 + y0*y0) * (y1 - y2) + (x1*x1 + y1*y1) * (y2 - y0) + (x2*x2 + y2*y2) * (y0 - y1)) / d;
-    double cy = ((x0*x0 + y0*y0) * (x2 - x1) + (x1*x1 + y1*y1) * (x0 - x2) + (x2*x2 + y2*y2) * (x1 - x0)) / d;
-    
-    // Calculate radius squared
-    double dx = x0 - cx;
-    double dy = y0 - cy;
-    double r_squared = dx*dx + dy*dy;
-    
-    // Check if point is inside
-    dx = x - cx;
-    dy = y - cy;
-    return (dx*dx + dy*dy) < r_squared;
+    // Triangles are counter-clockwise. Evaluate the in-circle determinant
+    // relative to the inserted point so tiny triangles retain their scale.
+    const long double px = x, py = y;
+    const long double ax = x0 - px, ay = y0 - py;
+    const long double bx = x1 - px, by = y1 - py;
+    const long double cx = x2 - px, cy = y2 - py;
+    const long double det = (ax * ax + ay * ay) * (bx * cy - by * cx)
+                          + (bx * bx + by * by) * (cx * ay - cy * ax)
+                          + (cx * cx + cy * cy) * (ax * by - ay * bx);
+    return det > 0;
 }
 
 void DelaunayTriangulation::bowyerWatsonStep(int node_idx) {
@@ -76,9 +70,12 @@ void DelaunayTriangulation::bowyerWatsonStep(int node_idx) {
     
     const size_t num_triangles = triangles.size();
     
-    // 当三角形数量较多时使用并行优化
-    if (num_triangles > 100) {
-        const int num_threads = 8;
+    // This scan is repeated for every inserted point. Small triangulations
+    // cost less to scan serially than to launch a team for each insertion.
+    constexpr int triangles_per_thread = 512;
+    const int num_threads = std::clamp(static_cast<int>(num_triangles / triangles_per_thread),
+                                       1, omp_get_max_threads());
+    if (num_threads > 1) {
         std::vector<std::vector<size_t>> thread_bad_triangles(num_threads);
         
         // 预分配每个线程的空间
@@ -121,7 +118,7 @@ void DelaunayTriangulation::bowyerWatsonStep(int node_idx) {
     if (bad_triangles.empty()) return;
 
     // Find the boundary edges (edges that appear only once)
-    std::unordered_map<std::pair<int, int>, int, EdgeHash> edge_count;
+    std::unordered_map<std::pair<int, int>, int, DelaunayEdgeHash> edge_count;
     edge_count.reserve(bad_triangles.size() * 3);
     
     for (size_t tri_idx : bad_triangles) {
@@ -181,45 +178,13 @@ void DelaunayTriangulation::triangulate() {
     double maxX = minX;
     double maxY = minY;
     
-    // 当点数较多时使用并行归约
-    if (num_original_nodes > 1000) {
-        const int num_threads = 8;
-        std::vector<double> thread_minX(num_threads, nodes[0]);
-        std::vector<double> thread_minY(num_threads, nodes[1]);
-        std::vector<double> thread_maxX(num_threads, nodes[0]);
-        std::vector<double> thread_maxY(num_threads, nodes[1]);
-        
-        #pragma omp parallel num_threads(num_threads)
-        {
-            int tid = omp_get_thread_num();
-            
-            #pragma omp for schedule(static)
-            for (int i = 1; i < num_original_nodes; ++i) {
-                double x = nodes[i * 2];
-                double y = nodes[i * 2 + 1];
-                thread_minX[tid] = (x < thread_minX[tid]) ? x : thread_minX[tid];
-                thread_minY[tid] = (y < thread_minY[tid]) ? y : thread_minY[tid];
-                thread_maxX[tid] = (x > thread_maxX[tid]) ? x : thread_maxX[tid];
-                thread_maxY[tid] = (y > thread_maxY[tid]) ? y : thread_maxY[tid];
-            }
-        }
-        
-        // 合并各线程结果
-        for (int t = 0; t < num_threads; ++t) {
-            minX = (thread_minX[t] < minX) ? thread_minX[t] : minX;
-            minY = (thread_minY[t] < minY) ? thread_minY[t] : minY;
-            maxX = (thread_maxX[t] > maxX) ? thread_maxX[t] : maxX;
-            maxY = (thread_maxY[t] > maxY) ? thread_maxY[t] : maxY;
-        }
-    } else {
-        for (int i = 1; i < num_original_nodes; ++i) {
-            double x = nodes[i * 2];
-            double y = nodes[i * 2 + 1];
-            minX = (x < minX) ? x : minX;
-            minY = (y < minY) ? y : minY;
-            maxX = (x > maxX) ? x : maxX;
-            maxY = (y > maxY) ? y : maxY;
-        }
+    for (int i = 1; i < num_original_nodes; ++i) {
+        double x = nodes[i * 2];
+        double y = nodes[i * 2 + 1];
+        minX = std::min(minX, x);
+        maxX = std::max(maxX, x);
+        minY = std::min(minY, y);
+        maxY = std::max(maxY, y);
     }
 
     // Expand bounding box

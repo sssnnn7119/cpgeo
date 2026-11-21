@@ -162,7 +162,8 @@ inline bool should_flip_edge(
     std::span<const double> vertices,
     int vertices_dim,
     const std::unordered_map<std::pair<int, int>, EdgeInfo, EdgeHash>& edge_map,
-    const std::unordered_set<std::array<int, 3>, TriangleKeyHash>& triangle_set)
+    const std::unordered_set<std::array<int, 3>, TriangleKeyHash>& triangle_set,
+    std::span<const double> reference_sphere)
 {
     if (edge_info.tri0 == -1 || edge_info.tri1 == -1) {
         return false;  // Boundary edge, don't flip
@@ -420,7 +421,16 @@ inline bool should_flip_edge(
     
     // Flip if it reduces the maximum angle (with small threshold to avoid oscillation)
     const double threshold = 1e-6;
-    return (max_angle_after < max_angle_before - threshold);
+    if (!(max_angle_after < max_angle_before - threshold)) return false;
+    if (reference_sphere.empty()) return true;
+
+    auto orientation = [&](const int* tri) {
+        return sphere_orientation(reference_sphere.data() + 3 * tri[0],
+                                  reference_sphere.data() + 3 * tri[1],
+                                  reference_sphere.data() + 3 * tri[2]);
+    };
+    return orientation(tri0) * orientation(new_tri0.data()) > 0.0
+        && orientation(tri1) * orientation(new_tri1.data()) > 0.0;
 }
 
 // Perform the edge flip operation
@@ -626,12 +636,23 @@ std::vector<int> mesh_optimize_by_edge_flipping(
     std::span<const int> faces_in,
     int max_iterations)
 {
+    return mesh_optimize_by_edge_flipping(vertices, vertices_dim, faces_in, max_iterations, {});
+}
+
+std::vector<int> mesh_optimize_by_edge_flipping(
+    std::span<const double> vertices,
+    int vertices_dim,
+    std::span<const int> faces_in,
+    int max_iterations,
+    std::span<const double> reference_sphere)
+{
     if (vertices_dim <= 0 || vertices.size() % vertices_dim != 0) {
         return std::vector<int>(faces_in.begin(), faces_in.end());
     }
     const int vertex_count = static_cast<int>(vertices.size()) / vertices_dim;
 
-    if (faces_in.size() % 3 != 0 || vertex_count <= 0) {
+    if (faces_in.size() % 3 != 0 || vertex_count <= 0 ||
+        (!reference_sphere.empty() && reference_sphere.size() != 3 * static_cast<size_t>(vertex_count))) {
         return std::vector<int>(faces_in.begin(), faces_in.end());
     }
 
@@ -678,7 +699,7 @@ std::vector<int> mesh_optimize_by_edge_flipping(
             }
 
             const EdgeInfo& info = it_edge->second;
-            if (should_flip_edge(faces, info, vertices, vertices_dim, edge_map, triangle_set)) {
+            if (should_flip_edge(faces, info, vertices, vertices_dim, edge_map, triangle_set, reference_sphere)) {
                 flip_edge(faces, edge_map, edge, vertices, vertices_dim, triangle_set);
                 ++flips_this_iteration;
             }

@@ -28,38 +28,40 @@ def _enforce_axial_symmetry_yz_core(vertices: np.ndarray,
         edge_length = np.linalg.norm(vertices[all_edges[:, 0]] - vertices[all_edges[:, 1]], axis=1)
         threshold = float(np.mean(edge_length)) * 0.1
 
+    if not np.isfinite(threshold) or threshold < 0:
+        raise ValueError("Mirror threshold must be finite and nonnegative.")
+
+    # A triangle enters the retained half only when all three vertices clear the cut.
+    face_distance = vertices[faces, 0].min(axis=1)
     while True:
-        # get the points where x > 0 and their faces fully inside the positive half-space
-        pos_mask = np.flatnonzero(vertices[:, 0] > threshold)
+        faces_pos = faces[face_distance > threshold]
+        edges = capi.get_mesh_edges(faces_pos) if faces_pos.size else np.empty((0, 3), dtype=int)
+        if np.any(edges[:, 2] > 2):
+            raise ValueError("The retained half of the mirror mesh has a non-manifold edge.")
+        loops = capi.extract_boundary_loops(faces_pos)
+        boundary_edges = np.count_nonzero(edges[:, 2] == 1)
+        if len(loops) == 1 and len(loops[0]) == boundary_edges:
+            break
 
-        faces_pos = faces[np.all(np.isin(faces, pos_mask), axis=1)]
-        pos_mask = np.unique(faces_pos)
-        v_pos = vertices[pos_mask]
+        remaining = face_distance[(face_distance > 0) & (face_distance <= threshold)]
+        if not remaining.size:
+            raise ValueError("Mirror cut requires one simple boundary loop on the positive half of the mesh.")
+        # Skip thresholds that would select exactly the same faces.
+        threshold = min(0.5 * threshold, np.nextafter(remaining.max(), 0.0))
 
-        remap = np.full(vertices.shape[0], -1, dtype=np.int64)
-        remap[pos_mask] = np.arange(pos_mask.size, dtype=np.int64)
-        faces_pos_local = remap[faces_pos]
+    pos_indices = np.unique(faces_pos)
+    remap = np.full(len(vertices), -1, dtype=np.int64)
+    remap[pos_indices] = np.arange(len(pos_indices))
+    faces_pos_local = remap[faces_pos]
+    boundary = remap[loops[0]]
 
-        # mirror the positive points to get the negative points
-        v_neg = v_pos.copy()
-        v_neg[:, 0] *= -1.0
+    v_pos = vertices[pos_indices]
+    v_neg = v_pos.copy()
+    v_neg[:, 0] *= -1.0
+    verts_all = np.vstack([v_pos, v_neg])
+    # Reflection reverses orientation. Reverse each mirrored triangle as well.
+    faces_all = np.vstack([faces_pos_local, faces_pos_local[:, ::-1] + len(v_pos)])
 
-        # combine the positive and negative points and faces
-        verts_all = np.vstack([v_pos, v_neg])
-        faces_all = np.vstack([faces_pos_local, faces_pos_local + v_pos.shape[0]])
-
-        # seal the cut by adding faces between the positive and negative points on the boundary
-        boundary_pos = capi.extract_boundary_loops(faces_pos_local)
-
-        # if there are boundaries, we need to reduce the threshold and try again, until we get a clean cut
-        if len(boundary_pos) > 1:
-            threshold *= 0.5
-            continue
-
-        boundary_pos = boundary_pos[0]
-        break
-
-    boundary = np.asarray(boundary_pos, dtype=np.int64)
     next_boundary = np.roll(boundary, -1)
     offset = np.int64(v_pos.shape[0])
 

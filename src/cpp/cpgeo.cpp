@@ -67,12 +67,12 @@ CPGEO_API cpgeo_handle_t sphere_triangulation_compute(
 
     try {
         std::span<const double> points_span(sphere_points, num_points * 3);
-        auto* tri = new cpgeo::SphereTriangulation(points_span);
+        auto tri = std::make_unique<cpgeo::SphereTriangulation>(points_span);
         
         tri->triangulate();
         
         *num_triangles = static_cast<int>(tri->size()) ;
-        return static_cast<cpgeo_handle_t>(tri);
+        return static_cast<cpgeo_handle_t>(tri.release());
     } catch (...) {
         return nullptr;
     }
