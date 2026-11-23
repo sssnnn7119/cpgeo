@@ -307,6 +307,17 @@ CPGEO_API void cpgeo_map_points_derivative2(
     double* out_rdu2
 );
 
+/**
+ * Fit physical control points at the knots of the reconstructed reference tree.
+ * targets and out_points each hold num_points XYZ triples in new knot order.
+ * Minimize ||W P - targets||^2 + alpha ||P - targets||^2, with alpha >= 0.
+ * Returns 0 on success, -1 on invalid input or allocation failure, and -2
+ * if the least-squares solve fails. Output is written only on success.
+ */
+CPGEO_API int cpgeo_fit_reconstructed_control_points(
+    cpgeo_handle_t tree, const double* targets, int num_points, double alpha, double* out_points
+);
+
 /*
  * Uniform remeshing API (two-phase compute/get pattern)
  *

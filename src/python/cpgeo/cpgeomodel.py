@@ -53,16 +53,29 @@ class CPGEO:
     def initialize(self):
         """Initialize the knot points and thresholds based on the control points."""
         
-        self._knots = self._initialize_knots(faces=self._cp_faces)
-        self._thresholds = capi.compute_thresholds(
-            knots=self._knots,
-            k=self._knot_influence_num,)
-        
-        if self._space_tree is not None:
-            capi.space_tree_destroy(self._space_tree)
-        self._space_tree = capi.space_tree_create(knots=self._knots,
-                                                  thresholds=self._thresholds)
-        
+        self._replace_control_mesh(self._control_points, self._cp_faces)
+
+    def _replace_control_mesh(self, points, faces, matching_alpha=None):
+        knots = self._initialize_knots(faces=faces)
+        if not 0 < self._knot_influence_num < len(knots):
+            raise ValueError("knot_influence_num must be between 1 and the number of knots minus one")
+        thresholds = capi.compute_thresholds(knots, self._knot_influence_num)
+        tree = capi.space_tree_create(knots, thresholds)
+        if not tree:
+            raise RuntimeError("Could not create the reference mesh space tree")
+        try:
+            if matching_alpha is not None:
+                points = capi.fit_reconstructed_control_points(tree, points, matching_alpha)
+        except BaseException:
+            capi.space_tree_destroy(tree)
+            raise
+
+        old_tree = self._space_tree
+        self._control_points, self._cp_faces = points, faces
+        self._knots, self._thresholds, self._space_tree = knots, thresholds, tree
+        if old_tree is not None:
+            capi.space_tree_destroy(old_tree)
+
     def get_weights3(self, query_points: np.ndarray, derivative: int = 0):
         """
         Get the weights of control points for given query points.
@@ -189,6 +202,10 @@ class CPGEO:
         Returns:
             np.ndarray: The mapped points in physical coordinates, shape (N, 3).
         """
+        if derivative == 0:
+            if self._space_tree is None:
+                raise RuntimeError("Initialize the surface before mapping points")
+            return capi.map_points(points, self._space_tree, self._control_points)
         points_plane = self.reference_to_curvilinear(points)
         return self.map2(points_plane, derivative=derivative)
     
@@ -240,19 +257,19 @@ class CPGEO:
         return new_vertices, new_faces    
 
 
-    def refine_surface(self, seed_size: float = 1.0, max_iterations: int = 10):
-        new_vertices, new_faces = self.uniformly_mesh(init_vertices=self._knots, seed_size=seed_size, max_iterations=max_iterations)
-        
-        new_control_points = self.map3(new_vertices)
+    def refine_surface(self, seed_size: float = 1.0, max_iterations: int = 10,
+                       *, matching_alpha: float | None = 0.1):
+        """Reconstruct the surface and fit its control points to samples of the old surface.
 
-        self._control_points = new_control_points
-        self._cp_faces = new_faces
-
-        self.initialize()
-
-        # new_cps = self._post_process()
-
-        # self._control_points = new_cps
+        matching_alpha weights squared control-point displacement relative to squared
+        sample mismatch. Zero gives an unregularized fit. None skips the fit.
+        """
+        if matching_alpha is not None and (not np.isfinite(matching_alpha) or matching_alpha < 0):
+            raise ValueError("matching_alpha must be finite and nonnegative")
+        seed_knots, faces = self.uniformly_mesh(seed_size=seed_size, max_iterations=max_iterations)
+        targets = self.map3(seed_knots)
+        self._replace_control_mesh(targets, faces, matching_alpha)
+        self._symmetry_points_match = None
 
     def reconstruct_symmetry(self,
                              mode: str = "axial",

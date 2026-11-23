@@ -176,6 +176,12 @@ _lib.cpgeo_get_mapped_points.argtypes = [
 ]
 _lib.cpgeo_get_mapped_points.restype = None
 
+_lib.cpgeo_fit_reconstructed_control_points.argtypes = [
+    cpgeo_handle_t, ctypes.POINTER(ctypes.c_double), ctypes.c_int,
+    ctypes.c_double, ctypes.POINTER(ctypes.c_double),
+]
+_lib.cpgeo_fit_reconstructed_control_points.restype = ctypes.c_int
+
 # cpgeo_uniformly_mesh_compute/get
 _lib.cpgeo_uniformly_mesh_compute.argtypes = [
     ctypes.POINTER(ctypes.c_double),  # init_vertices_sphere
@@ -820,6 +826,23 @@ def get_mesh_edges(elements: np.ndarray) -> np.ndarray:
     result = _lib.mesh_edges_get(out_edges_ptr)
     
     return out_edges.reshape(-1, 3)
+
+
+def fit_reconstructed_control_points(tree_handle, targets: np.ndarray, alpha: float = 0.1):
+    """Fit the new basis at its own knots to corresponding old-surface samples."""
+    targets = np.ascontiguousarray(targets, dtype=np.float64)
+    if targets.ndim != 2 or targets.shape[1] != 3:
+        raise ValueError("targets must have shape (N, 3)")
+    output = np.empty_like(targets)
+    ptr = ctypes.POINTER(ctypes.c_double)
+    status = _lib.cpgeo_fit_reconstructed_control_points(
+        tree_handle, targets.ctypes.data_as(ptr), len(targets), alpha, output.ctypes.data_as(ptr)
+    )
+    if status == -2:
+        raise RuntimeError("Reconstruction matching least-squares solve did not converge")
+    if status != 0:
+        raise ValueError("Could not fit control points: check reference tree, target points and alpha")
+    return output
 
 
 def uniformly_mesh(init_vertices: np.ndarray, control_points: np.ndarray, tree_handle: cpgeo_handle_t, seed_size: float = 1.0, max_iterations: int = 4):
