@@ -16,7 +16,7 @@ struct BasisRow {
 // Damped CGLS for one coordinate of P = target + delta. The three
 // coordinates share W, but each has its own residual and stopping criterion.
 bool fit_coordinate(const std::vector<BasisRow>& basis, const double* targets,
-                    int axis, double alpha, std::vector<double>& fitted) {
+                    int axis, double alpha, size_t fixed_count, std::vector<double>& fitted) {
     const size_t n = basis.size();
     std::vector<double> delta(n, 0.0), residual(n, 0.0), gradient(n), direction(n), mapped(n);
     for (size_t i = 0; i < n; ++i) {
@@ -24,7 +24,7 @@ bool fit_coordinate(const std::vector<BasisRow>& basis, const double* targets,
         // W is a partition of unity. Differences avoid cancellation far from the origin.
         for (size_t k = 0; k < row.indices.size(); ++k) {
             const size_t neighbor = row.indices[k];
-            residual[i] += row.weights[k] * (targets[3 * i + axis] - targets[3 * neighbor + axis]);
+            residual[i] += row.weights[k] * (targets[3 * i + axis] - fitted[3 * neighbor + axis]);
         }
     }
 
@@ -35,6 +35,8 @@ bool fit_coordinate(const std::vector<BasisRow>& basis, const double* targets,
             for (size_t k = 0; k < row.indices.size(); ++k)
                 gradient[row.indices[k]] += row.weights[k] * residual[i];
         }
+        // Only free control coordinates belong to the search space.
+        std::fill_n(gradient.begin(), fixed_count, 0.0);
         return std::inner_product(gradient.begin(), gradient.end(), gradient.begin(), 0.0);
     };
 
@@ -68,7 +70,7 @@ bool fit_coordinate(const std::vector<BasisRow>& basis, const double* targets,
         for (size_t i = 0; i < n; ++i) direction[i] = gradient[i] + beta * direction[i];
         norm2 = next_norm2;
     }
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = fixed_count; i < n; ++i) {
         fitted[3 * i + axis] = targets[3 * i + axis] + delta[i];
         if (!std::isfinite(fitted[3 * i + axis])) return false;
     }
@@ -80,6 +82,14 @@ bool fit_coordinate(const std::vector<BasisRow>& basis, const double* targets,
 extern "C" CPGEO_API int cpgeo_fit_reconstructed_control_points(
     cpgeo_handle_t handle, const double* targets, int num_points, double alpha, double* out_points
 ) {
+    return cpgeo_fit_with_fixed_controls(handle, targets, num_points, alpha, nullptr, 0, out_points);
+}
+
+extern "C" CPGEO_API int cpgeo_fit_with_fixed_controls(
+    cpgeo_handle_t handle, const double* targets, int num_points, double alpha,
+    const double* fixed_points, int fixed_count, double* out_points
+) {
+    if (fixed_count < 0 || fixed_count > num_points || (fixed_count && !fixed_points)) return -1;
     if (!handle || !targets || !out_points || num_points <= 0 || !std::isfinite(alpha) || alpha < 0.0)
         return -1;
     try {
@@ -98,9 +108,15 @@ extern "C" CPGEO_API int cpgeo_fit_reconstructed_control_points(
             if (!(std::accumulate(row.weights.begin(), row.weights.end(), 0.0) > 0.0)) return -1;
         }
 
-        std::vector<double> fitted(knots.size());
+        std::vector<double> fitted(targets, targets + knots.size());
+        if (fixed_count > 0) {
+            const size_t fixed_size = 3 * static_cast<size_t>(fixed_count);
+            if (!std::all_of(fixed_points, fixed_points + fixed_size, [](double v) { return std::isfinite(v); }))
+                return -1;
+            std::copy_n(fixed_points, fixed_size, fitted.begin());
+        }
         for (int axis = 0; axis < 3; ++axis) {
-            if (!fit_coordinate(basis, targets, axis, alpha, fitted)) return -2;
+            if (!fit_coordinate(basis, targets, axis, alpha, fixed_count, fitted)) return -2;
         }
         std::copy(fitted.begin(), fitted.end(), out_points);
         return 0;

@@ -176,31 +176,24 @@ _lib.cpgeo_get_mapped_points.argtypes = [
 ]
 _lib.cpgeo_get_mapped_points.restype = None
 
-_lib.cpgeo_fit_reconstructed_control_points.argtypes = [
-    cpgeo_handle_t, ctypes.POINTER(ctypes.c_double), ctypes.c_int,
-    ctypes.c_double, ctypes.POINTER(ctypes.c_double),
+# NumPy validates the array dtype/layout before passing its buffer to C.
+_xyz = np.ctypeslib.ndpointer(dtype=np.float64, ndim=2, flags="C_CONTIGUOUS")
+_indices = np.ctypeslib.ndpointer(dtype=np.int64, ndim=1, flags="C_CONTIGUOUS")
+_faces = np.ctypeslib.ndpointer(dtype=np.int32, ndim=2, flags="C_CONTIGUOUS")
+_int_out = ctypes.POINTER(ctypes.c_int)
+_lib.cpgeo_initialize_knots.argtypes = [_faces, ctypes.c_int, ctypes.c_int, _xyz]
+_lib.cpgeo_fit_with_fixed_controls.argtypes = [
+    cpgeo_handle_t, _xyz, ctypes.c_int, ctypes.c_double, _xyz, ctypes.c_int, _xyz,
 ]
-_lib.cpgeo_fit_reconstructed_control_points.restype = ctypes.c_int
-
-# cpgeo_uniformly_mesh_compute/get
-_lib.cpgeo_uniformly_mesh_compute.argtypes = [
-    ctypes.POINTER(ctypes.c_double),  # init_vertices_sphere
-    ctypes.c_int,                     # num_vertices
-    ctypes.POINTER(ctypes.c_double),  # control_points
-    ctypes.c_int,                     # num_control_points
-    cpgeo_handle_t,                   # tree
-    ctypes.c_double,                  # seed_size
-    ctypes.c_int,                     # max_iterations
-    ctypes.POINTER(ctypes.c_int),     # out_num_vertices
-    ctypes.POINTER(ctypes.c_int)      # out_num_faces
+_lib.cpgeo_mesh_compute.argtypes = [
+    _xyz, ctypes.c_int, _xyz, ctypes.c_int, cpgeo_handle_t, ctypes.c_double,
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, _int_out, _int_out,
 ]
-_lib.cpgeo_uniformly_mesh_compute.restype = ctypes.c_int
-
-_lib.cpgeo_uniformly_mesh_get.argtypes = [
-    ctypes.POINTER(ctypes.c_double),  # out_vertices
-    ctypes.POINTER(ctypes.c_int)      # out_faces
+_lib.cpgeo_reconstruction_compute.argtypes = [
+    cpgeo_handle_t, _xyz, ctypes.c_int, ctypes.c_double, ctypes.c_int, _indices,
+    ctypes.c_int, ctypes.POINTER(ctypes.c_double), _indices, _xyz, _int_out, _int_out,
 ]
-_lib.cpgeo_uniformly_mesh_get.restype = ctypes.c_int
+_lib.cpgeo_uniformly_mesh_get.argtypes = [_xyz, _faces]
 
 # cpgeo_map_points_derivative2
 _lib.cpgeo_map_points_derivative2.argtypes = [
@@ -828,76 +821,94 @@ def get_mesh_edges(elements: np.ndarray) -> np.ndarray:
     return out_edges.reshape(-1, 3)
 
 
-def fit_reconstructed_control_points(tree_handle, targets: np.ndarray, alpha: float = 0.1):
-    """Fit the new basis at its own knots to corresponding old-surface samples."""
-    targets = np.ascontiguousarray(targets, dtype=np.float64)
-    if targets.ndim != 2 or targets.shape[1] != 3:
-        raise ValueError("targets must have shape (N, 3)")
+def _xyz_array(points):
+    points = np.ascontiguousarray(points, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("Expected an (N, 3) coordinate array")
+    return points
+
+
+def initialize_knots(faces, num_vertices):
+    """Compute unit-sphere knots and orient the input triangles outward in place."""
+    faces = np.asarray(faces)
+    if faces.ndim != 2 or faces.shape[1] != 3 or faces.dtype.kind not in "iu" or not faces.flags.writeable:
+        raise ValueError("Expected a writable (F, 3) integer triangle array")
+    if faces.dtype != np.int32 and faces.size and (faces.min() < 0 or faces.max() > np.iinfo(np.int32).max):
+        raise ValueError("Triangle indices must fit in a nonnegative int32")
+    triangles = np.ascontiguousarray(faces, dtype=np.int32)
+    knots = np.empty((num_vertices, 3), dtype=np.float64)
+    status = _lib.cpgeo_initialize_knots(triangles, len(triangles), num_vertices, knots)
+    if status == -1:
+        raise ValueError("Expected a closed, connected triangular control mesh of spherical topology")
+    if status:
+        raise RuntimeError("Could not compute spherical knots for the control mesh")
+    if triangles is not faces:
+        faces[...] = triangles
+    return knots
+
+
+def fit_reconstructed_control_points(tree_handle, targets, alpha=0.1, fixed_points=None):
+    """Fit the new basis at its knots to the given physical targets."""
+    targets = _xyz_array(targets)
+    fixed = np.empty((0, 3)) if fixed_points is None else _xyz_array(fixed_points)
     output = np.empty_like(targets)
-    ptr = ctypes.POINTER(ctypes.c_double)
-    status = _lib.cpgeo_fit_reconstructed_control_points(
-        tree_handle, targets.ctypes.data_as(ptr), len(targets), alpha, output.ctypes.data_as(ptr)
-    )
+    status = _lib.cpgeo_fit_with_fixed_controls(tree_handle, targets, len(targets), alpha,
+                                                fixed, len(fixed), output)
     if status == -2:
         raise RuntimeError("Reconstruction matching least-squares solve did not converge")
-    if status != 0:
-        raise ValueError("Could not fit control points: check reference tree, target points and alpha")
+    if status:
+        raise ValueError("Invalid tree, targets or matching parameters")
     return output
 
 
-def uniformly_mesh(init_vertices: np.ndarray, control_points: np.ndarray, tree_handle: cpgeo_handle_t, seed_size: float = 1.0, max_iterations: int = 4):
-    """Uniformly remesh a sphere surface starting from initial vertices.
+def _get_uniform_mesh(num_vertices, num_faces):
+    vertices = np.empty((num_vertices.value, 3), dtype=np.float64)
+    faces = np.empty((num_faces.value, 3), dtype=np.int32)
+    if len(vertices) and _lib.cpgeo_uniformly_mesh_get(vertices, faces):
+        raise RuntimeError("Could not retrieve remeshed vertices and faces")
+    return vertices, faces
 
-    Args:
-        init_vertices: Initial sphere vertices as array shape (n, 3) or flat (3n,)
-        control_points: Control points array shape (m, 3)
-        tree_handle: SpaceTree handle
-        seed_size: desired seed size
-        max_iterations: max uniforming iterations
 
-    Returns:
-        Tuple[np.ndarray, np.ndarray]: (vertices (num_vertices,3), faces (num_faces,3))
-    """
+def uniformly_mesh(init_vertices, control_points, tree_handle, seed_size=1.0, max_iterations=4,
+                   *, fixed_count=0, compact_faces=False):
+    """Remesh unit-sphere seeds. compact_faces selects the model's face numbering and winding."""
     if not np.isfinite(seed_size) or seed_size <= 0:
         raise ValueError("seed_size must be finite and positive")
+    seeds = np.ascontiguousarray(init_vertices, dtype=np.float64).reshape(-1, 3)
+    controls = np.ascontiguousarray(control_points, dtype=np.float64).reshape(-1, 3)
+    nv, nf = ctypes.c_int(), ctypes.c_int()
+    status = _lib.cpgeo_mesh_compute(seeds, len(seeds), controls, len(controls), tree_handle,
+                                     seed_size, max_iterations, fixed_count, compact_faces,
+                                     ctypes.byref(nv), ctypes.byref(nf))
+    if status and len(seeds) and len(controls):
+        raise RuntimeError("Uniform remeshing failed")
+    return _get_uniform_mesh(nv, nf)
 
-    init_flat = np.ascontiguousarray(init_vertices.flatten(), dtype=np.float64)
-    control_flat = np.ascontiguousarray(control_points.flatten(), dtype=np.float64)
 
-    num_vertices = len(init_flat) // 3
-    num_control = len(control_flat) // 3
-
-    # First call compute to get output sizes
-    out_num_vertices = ctypes.c_int()
-    out_num_faces = ctypes.c_int()
-
-    status = _lib.cpgeo_uniformly_mesh_compute(
-        init_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-        ctypes.c_int(num_vertices),
-        control_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-        ctypes.c_int(num_control),
-        tree_handle,
-        ctypes.c_double(seed_size),
-        ctypes.c_int(max_iterations),
-        ctypes.byref(out_num_vertices),
-        ctypes.byref(out_num_faces)
-    )
-
-    if status != 0 and num_vertices > 0 and num_control > 0:
-        raise RuntimeError("Uniform remeshing failed. Check the input sphere and remeshing parameters.")
-    if out_num_vertices.value <= 0 or out_num_faces.value <= 0:
-        return np.zeros((0,3)), np.zeros((0,3), dtype=np.int32)
-
-    out_vertices = np.zeros(out_num_vertices.value * 3, dtype=np.float64)
-    out_faces = np.zeros(out_num_faces.value * 3, dtype=np.int32)
-
-    # Call get to fetch data
-    _lib.cpgeo_uniformly_mesh_get(
-        out_vertices.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-        out_faces.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
-    )
-
-    return out_vertices.reshape((out_num_vertices.value, 3)), out_faces.reshape((out_num_faces.value, 3))
+def prepare_reconstruction(tree, controls, seed_size, iterations, fixed_control_indices, matching_alpha):
+    """Return native reconstruction targets, faces, fixed coordinates and their new indices."""
+    controls = _xyz_array(controls)
+    ids = np.asarray([] if fixed_control_indices is None else fixed_control_indices)
+    if ids.ndim != 1 or (ids.size and ids.dtype.kind not in "iu"):
+        raise ValueError("Expected a one-dimensional sequence of control indices")
+    ids = np.ascontiguousarray(ids, dtype=np.int64)
+    new_ids = np.empty_like(ids)
+    fixed = np.empty((len(ids), 3))
+    nv, nf = ctypes.c_int(), ctypes.c_int()
+    alpha = None if matching_alpha is None else ctypes.c_double(matching_alpha)
+    status = _lib.cpgeo_reconstruction_compute(tree, controls, len(controls), seed_size, iterations,
+                                               ids, len(ids), alpha, new_ids, fixed,
+                                               ctypes.byref(nv), ctypes.byref(nf))
+    if status == -4:
+        raise ValueError("seed_size must be finite and positive")
+    if status == -5:
+        raise ValueError("matching_alpha must be finite and nonnegative")
+    if status == -3:
+        raise ValueError("Fixed control indices must be unique and within the current mesh")
+    if status:
+        raise RuntimeError("Could not prepare reconstruction seeds and targets")
+    targets, faces = _get_uniform_mesh(nv, nf)
+    return targets, faces, fixed, new_ids if fixed_control_indices is not None else None
 
 
 def extract_boundary_loops(triangles: np.ndarray) -> List[np.ndarray]:
