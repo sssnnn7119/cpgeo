@@ -230,52 +230,21 @@ std::vector<double> get_weights(
     const std::span<const double> thresholds, 
     const std::span<const double, 3> query_points) {
 
-    const int numCps = knots.size() / 3;
-    const int numIndices = indices.size();
-
-    std::vector<double> weights(numIndices, 0.0);
-    Tensor2D weight_dx(numIndices, 3);
-    double weight_sums = 0.0;
-    std::array<double, 3> weight_sum_dx = { 0.0, 0.0, 0.0 };
-
-
-    double qx = query_points[0];
-    double qy = query_points[1];
-    double qz = query_points[2];
-
-    // compute the initial weights
-#pragma omp parallel for reduction(+:weight_sums)
-    for (int idx = 0; idx < numIndices; ++idx) {
-        int knot_idx = indices[idx];
-
-        double kx = knots[knot_idx * 3];
-        double ky = knots[knot_idx * 3 + 1];
-        double kz = knots[knot_idx * 3 + 2];
-
-        std::array<double, 3> dp = { qx - kx, qy - ky, qz - kz };
-
-        double threshold = thresholds[knot_idx];
-        auto result = weightFunctionDerivative1(dp, threshold);
-
-        weights[idx] = std::get<0>(result);
-
-        weight_sums += weights[idx];
+    std::vector<double> weights;
+    weights.reserve(indices.size());
+    double sum = 0.0;
+    for (int index : indices) {
+        const double* knot = knots.data() + 3 * index;
+        std::array<double, 3> offset{query_points[0] - knot[0], query_points[1] - knot[1],
+                                     query_points[2] - knot[2]};
+        double w = weightFunction(offset, thresholds[index]);
+        weights.push_back(w);
+        sum += w;
     }
-    if (weight_sums == 0.0) {
-        return weights;
+    if (sum > 0.0) {
+        for (double& w : weights) w /= sum;
     }
-    // normalize weights
-    std::vector<double> rdot(numIndices, 0.0);
-    Tensor2D rdudot(numIndices, 2);
-
-    for (int idx = 0; idx < numIndices; ++idx) {
-        int query_idx = indices[idx];
-        if (weight_sums > 0) {
-            rdot[idx] = weights[idx] / weight_sums;
-        }
-    }
-
-    return rdot;
+    return weights;
 }
 
 std::vector<double> get_weights(
@@ -285,57 +254,8 @@ std::vector<double> get_weights(
     const std::span<const double, 2> query_points_plane,
     bool north_pole) {
 
-    const int numCps = knots.size() / 3;
-    const int numIndices = indices.size();
-
-    std::vector<double> weights(numIndices, 0.0);
-    Tensor2D weight_dx(numIndices, 3);
-    double weight_sums = 0.0;
-    std::array<double, 3> weight_sum_dx = { 0.0, 0.0, 0.0 };
-
-
-	auto query_points = stereographicProjection2_3(query_points_plane, north_pole);
-
-    double qx = query_points[0];
-    double qy = query_points[1];
-    double qz = query_points[2];
-
-    // compute the initial weights
-//#pragma omp parallel for reduction(+:weight_sums)
-    for (int idx = 0; idx < numIndices; ++idx) {
-        int knot_idx = indices[idx];
-
-
-
-
-        double kx = knots[knot_idx * 3];
-        double ky = knots[knot_idx * 3 + 1];
-        double kz = knots[knot_idx * 3 + 2];
-
-        std::array<double, 3> dp = { qx - kx, qy - ky, qz - kz };
-
-        double threshold = thresholds[knot_idx];
-        auto result = weightFunctionDerivative1(dp, threshold);
-
-        weights[idx] = std::get<0>(result);
-
-        weight_sums += weights[idx];
-    }
-    if (weight_sums == 0.0) {
-        return weights;
-    }
-    // normalize weights
-    std::vector<double> rdot(numIndices, 0.0);
-    Tensor2D rdudot(numIndices, 2);
-
-    for (int idx = 0; idx < numIndices; ++idx) {
-        int query_idx = indices[idx];
-        if (weight_sums > 0) {
-            rdot[idx] = weights[idx] / weight_sums;
-        }
-    }
-
-    return rdot;
+    return get_weights(indices, knots, thresholds,
+                       stereographicProjection2_3(query_points_plane, north_pole));
 }
 
 std::array<std::vector<double>, 2> get_weights_derivative1(
@@ -669,7 +589,7 @@ std::vector<double> map_points_batch(
     std::span<const double> query_point,
     SpaceTree& tree,
     const std::span<const double> controlpoints,
-    bool north_pole
+    bool /*north_pole*/
 ){
     int num_queries = static_cast<int>(query_point.size() / 3);
     std::vector<double> out_mapped(num_queries * 3, 0.0);
@@ -686,12 +606,8 @@ std::vector<double> map_points_batch(
     for (int i = 0; i < num_queries; ++i) {
         auto indices_cps = tree.query_point(query_point[3 * i], query_point[3 * i+1], query_point[3 * i+2]);
 
-        std::array<double, 2> query_point_plane = stereographicProjection3_2(
-            std::span<const double, 3>(query_point.data() + i * 3, 3),
-            north_pole
-        );
-
-        auto weights = get_weights(indices_cps, knots_vec, thresholds_vec, query_point_plane, north_pole);
+        auto point = std::span<const double, 3>(query_point.data() + 3 * i, 3);
+        auto weights = get_weights(indices_cps, knots_vec, thresholds_vec, point);
         get_mapped_points_(indices_cps, weights, controlpoints, std::span<double, 3>(out_mapped.data() + i * 3, 3));
     }
 

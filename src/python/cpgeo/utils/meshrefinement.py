@@ -1,7 +1,6 @@
 import numpy as np
 import scipy.sparse as sp
 from .. import capi
-import pypardiso
 
 def mesh_regulation_2D(nodes: np.ndarray,
                                       elements: np.ndarray,
@@ -11,6 +10,8 @@ def mesh_regulation_2D(nodes: np.ndarray,
     Torch implementation of edge length regularization
 
     """
+    import pypardiso
+
     nodes = nodes.copy()
 
     edges = capi.get_mesh_edges(elements)[:, :2]

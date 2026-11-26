@@ -78,7 +78,12 @@ def copy_mingw_dependencies(dll_path: Path, target_dir: Path) -> bool:
         return False
 
     deps = get_pe_imports(dll_path)
-    fallback_deps = ["libgomp-1.dll", "libwinpthread-1.dll", "libgcc_s_seh-1.dll", "libstdc++-6.dll"]
+    fallback_deps = [
+        "libgomp-1.dll",
+        "libwinpthread-1.dll",
+        "libgcc_s_seh-1.dll",
+        "libstdc++-6.dll",
+    ]
     if not deps:
         deps = fallback_deps.copy()
     else:
@@ -205,7 +210,15 @@ def compile_native(compile_mode: str):
         _run_cmd(["cmake", ".."], BUILD_DIR)
         _run_cmd(["cmake", "--build", ".", "--config", cmake_mode], BUILD_DIR)
     else:
-        _run_cmd(["cmake", "..", f"-DCMAKE_BUILD_TYPE={cmake_mode}", "-DCMAKE_CXX_FLAGS=-fopenmp"], BUILD_DIR)
+        _run_cmd(
+            [
+                "cmake",
+                "..",
+                f"-DCMAKE_BUILD_TYPE={cmake_mode}",
+                "-DCMAKE_CXX_FLAGS=-fopenmp",
+            ],
+            BUILD_DIR,
+        )
         _run_cmd(["cmake", "--build", ".", "--target", "cpgeo"], BUILD_DIR)
 
 
@@ -223,17 +236,22 @@ def compile_mingw64(compile_mode: str):
 
     toolchain = ROOT / "cmake" / "toolchain-mingw-w64.cmake"
     if not toolchain.exists():
-        raise RuntimeError("未找到 Mingw-w64 工具链文件 cmake/toolchain-mingw-w64.cmake")
+        raise RuntimeError(
+            "未找到 Mingw-w64 工具链文件 cmake/toolchain-mingw-w64.cmake"
+        )
 
     cmake_mode = compile_mode.capitalize()
-    _run_cmd([
-        "cmake",
-        "..",
-        f"-DCMAKE_TOOLCHAIN_FILE={toolchain}",
-        f"-DCMAKE_BUILD_TYPE={cmake_mode}",
-        "-DCMAKE_CXX_FLAGS=-fopenmp",
-        "-DOpenMP_CXX_FLAGS=-fopenmp",
-    ], BUILD_DIR)
+    _run_cmd(
+        [
+            "cmake",
+            "..",
+            f"-DCMAKE_TOOLCHAIN_FILE={toolchain}",
+            f"-DCMAKE_BUILD_TYPE={cmake_mode}",
+            "-DCMAKE_CXX_FLAGS=-fopenmp",
+            "-DOpenMP_CXX_FLAGS=-fopenmp",
+        ],
+        BUILD_DIR,
+    )
     _run_cmd(["cmake", "--build", ".", "--target", "cpgeo"], BUILD_DIR)
 
 
@@ -241,7 +259,7 @@ if __name__ == "__main__":
     import sys
     import os
 
-    compile_mode = 'release'  # 'Release' or 'Debug'
+    compile_mode = "release"  # 'Release' or 'Debug'
 
     build_cache = Path("build/CMakeCache.txt")
     if build_cache.exists():

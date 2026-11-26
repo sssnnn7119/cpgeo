@@ -8,6 +8,8 @@
 #include "mesh_utils.h"
 #include "symmetry_rotation.h"
 #include <memory>
+#include <numeric>
+#include <stdexcept>
 #include <algorithm>
 #include "tensor.h"
 
@@ -467,8 +469,8 @@ CPGEO_API void cpgeo_map_points_derivative2(
 }
 
 // uniformlyMesh C API: compute + get pattern
-static std::vector<double> temp_uniform_vertices;
-static std::vector<int> temp_uniform_faces;
+static thread_local std::vector<double> temp_uniform_vertices;
+static thread_local std::vector<int> temp_uniform_faces;
 
 CPGEO_API int cpgeo_uniformly_mesh_compute(
     const double* init_vertices_sphere,
@@ -481,6 +483,52 @@ CPGEO_API int cpgeo_uniformly_mesh_compute(
     int* out_num_vertices,
     int* out_num_faces
 ) {
+    return cpgeo_uniformly_mesh_fixed_compute(init_vertices_sphere, num_vertices, control_points,
+        num_control_points, tree, seed_size, max_iterations, 0, out_num_vertices, out_num_faces);
+}
+
+CPGEO_API int cpgeo_uniformly_mesh_fixed_compute(
+    const double* init_vertices_sphere,
+    int num_vertices,
+    const double* control_points,
+    int num_control_points,
+    cpgeo_handle_t tree,
+    double seed_size,
+    int max_iterations,
+    int fixed_count,
+    int* out_num_vertices,
+    int* out_num_faces
+) {
+    return cpgeo_mesh_compute(init_vertices_sphere, num_vertices, control_points, num_control_points,
+        tree, seed_size, max_iterations, fixed_count, 0, out_num_vertices, out_num_faces);
+}
+
+// Keep referenced seeds in their original order and orient the faces for the model.
+static void compact_model_mesh(std::vector<double>& seeds, std::vector<int>& faces, int fixed_count) {
+    std::vector<int> new_index(seeds.size() / 3, -1);
+    for (auto v : faces) new_index[v] = 0;
+    int kept = 0;
+    for (size_t v = 0; v < new_index.size(); ++v) {
+        if (new_index[v] < 0) {
+            if (v < static_cast<size_t>(fixed_count))
+                throw std::runtime_error("Triangulation omitted a fixed control point");
+            continue;
+        }
+        new_index[v] = kept;
+        if (static_cast<size_t>(kept) != v)
+            std::copy_n(seeds.data() + 3 * v, 3, seeds.data() + 3 * kept);
+        ++kept;
+    }
+    seeds.resize(static_cast<size_t>(kept) * 3);
+    for (int& v : faces) v = new_index[v];
+    for (size_t i = 0; i < faces.size(); i += 3) std::swap(faces[i + 1], faces[i + 2]);
+}
+
+CPGEO_API int cpgeo_mesh_compute(
+    const double* init_vertices_sphere, int num_vertices, const double* control_points,
+    int num_control_points, cpgeo_handle_t tree, double seed_size, int max_iterations,
+    int fixed_count, int compact_faces, int* out_num_vertices, int* out_num_faces
+) {
     if (!init_vertices_sphere || !control_points || !tree || !out_num_vertices || !out_num_faces || num_vertices <= 0 || num_control_points <= 0 || max_iterations < 0) {
         return -1;
     }
@@ -490,13 +538,61 @@ CPGEO_API int cpgeo_uniformly_mesh_compute(
         std::span<const double> control_sp(control_points, num_control_points * 3);
         auto* tree_ptr = static_cast<cpgeo::SpaceTree*>(tree);
 
-        auto result = cpgeo::uniformlyMesh(init_sp, control_sp, *tree_ptr, seed_size, max_iterations);
+        if (control_sp.size() != tree_ptr->get_knots().size()) return -1;
+        auto result = cpgeo::uniformlyMesh(init_sp, control_sp, *tree_ptr, seed_size, max_iterations, fixed_count);
         temp_uniform_vertices = std::move(std::get<0>(result));
         temp_uniform_faces = std::move(std::get<1>(result));
 
+        if (compact_faces) compact_model_mesh(temp_uniform_vertices, temp_uniform_faces, fixed_count);
         *out_num_vertices = static_cast<int>(temp_uniform_vertices.size() / 3);
         *out_num_faces = static_cast<int>(temp_uniform_faces.size() / 3);
 
+        return 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
+CPGEO_API int cpgeo_reconstruction_compute(
+    cpgeo_handle_t handle, const double* controls, int n, double seed_size, int iterations,
+    const int64_t* fixed_ids, int fixed_count, const double* matching_alpha, int64_t* new_ids,
+    double* fixed_xyz, int* num_vertices, int* num_faces
+) {
+    if (!handle || !controls || n <= 0 || !num_vertices || !num_faces) return -1;
+    if (!std::isfinite(seed_size) || seed_size <= 0.0) return -4;
+    if (matching_alpha && (!std::isfinite(*matching_alpha) || *matching_alpha < 0.0)) return -5;
+    if (fixed_count < 0 || fixed_count > n || (fixed_count && (!fixed_ids || !fixed_xyz || !new_ids)))
+        return -3;
+    try {
+        auto& tree = *static_cast<cpgeo::SpaceTree*>(handle);
+        const auto& knots = tree.get_knots();
+        if (knots.size() != static_cast<size_t>(n) * 3) return -1;
+        std::vector<double> ordered;
+        if (fixed_count) {
+            std::vector<bool> fixed(n);
+            ordered.reserve(knots.size());
+            for (int i = 0; i < fixed_count; ++i) {
+                const auto id = fixed_ids[i];
+                if (id < 0 || id >= n || fixed[id]) return -3;
+                fixed[id] = true;
+                ordered.insert(ordered.end(), knots.data() + 3 * id, knots.data() + 3 * id + 3);
+                std::copy_n(controls + 3 * id, 3, fixed_xyz + 3 * i);
+            }
+            for (int i = 0; i < n; ++i) {
+                if (!fixed[i]) ordered.insert(ordered.end(), knots.data() + 3 * i, knots.data() + 3 * i + 3);
+            }
+        }
+        int status = cpgeo_mesh_compute(fixed_count ? ordered.data() : knots.data(), n, controls, n,
+            handle, seed_size, iterations, fixed_count, 1, num_vertices, num_faces);
+        if (status != 0 || *num_vertices == 0) return -1;
+        temp_uniform_vertices = cpgeo::map_points_batch(temp_uniform_vertices, tree,
+            std::span<const double>(controls, knots.size()));
+        // Stable compaction preserves the protected prefix in the caller's order.
+        if (fixed_count) {
+            std::iota(new_ids, new_ids + fixed_count, int64_t{0});
+            if (!matching_alpha)
+                std::copy_n(fixed_xyz, 3 * static_cast<size_t>(fixed_count), temp_uniform_vertices.begin());
+        }
         return 0;
     } catch (...) {
         return -1;

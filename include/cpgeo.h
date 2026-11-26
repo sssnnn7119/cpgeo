@@ -307,6 +307,30 @@ CPGEO_API void cpgeo_map_points_derivative2(
     double* out_rdu2
 );
 
+/** Initialize one unit-sphere knot per control vertex of a closed genus-zero mesh.
+ * On success, out_knots contains 3*num_vertices doubles and faces are oriented outward.
+ * Returns -1 for invalid topology/input and -2 for numerical failure.
+ */
+CPGEO_API int cpgeo_initialize_knots(int* faces, int num_faces, int num_vertices, double* out_knots);
+
+/**
+ * Fit physical control points at the knots of the reconstructed reference tree.
+ * targets and out_points each hold num_points XYZ triples in new knot order.
+ * Minimize ||W P - targets||^2 + alpha ||P - targets||^2, with alpha >= 0.
+ * Returns 0 on success, -1 on invalid input or allocation failure, and -2
+ * if the least-squares solve fails. Output is written only on success.
+ */
+CPGEO_API int cpgeo_fit_reconstructed_control_points(
+    cpgeo_handle_t tree, const double* targets, int num_points, double alpha, double* out_points
+);
+
+/** Constrained fit. The first fixed_count control points take the supplied XYZ values exactly.
+ * All num_points samples, including those at the fixed controls' knots, remain fitting targets. */
+CPGEO_API int cpgeo_fit_with_fixed_controls(
+    cpgeo_handle_t tree, const double* targets, int num_points, double alpha,
+    const double* fixed_points, int fixed_count, double* out_points
+);
+
 /*
  * Uniform remeshing API (two-phase compute/get pattern)
  *
@@ -332,6 +356,40 @@ CPGEO_API int cpgeo_uniformly_mesh_compute(
     int max_iterations,
     int* out_num_vertices,
     int* out_num_faces
+);
+
+/** As above, retaining the first fixed_count input seeds in their original order and positions. */
+CPGEO_API int cpgeo_uniformly_mesh_fixed_compute(
+    const double* init_vertices_sphere,
+    int num_vertices,
+    const double* control_points,
+    int num_control_points,
+    cpgeo_handle_t tree,
+    double seed_size,
+    int max_iterations,
+    int fixed_count,
+    int* out_num_vertices,
+    int* out_num_faces
+);
+
+/** As fixed_compute, optionally discarding unused seeds and orienting faces for CPGEO. */
+CPGEO_API int cpgeo_mesh_compute(
+    const double* seeds, int num_seeds, const double* controls, int num_controls,
+    cpgeo_handle_t tree, double seed_size, int iterations, int fixed_count, int compact_faces,
+    int* num_vertices, int* num_faces
+);
+
+/** Prepare the new topology and sample the old surface at its seeds.
+ * fixed_ids index the old controls. new_ids and fixed_xyz are caller-owned
+ * buffers of K indices and K XYZ triples in the same order (nullable if K=0).
+ * Retrieve targets and faces with cpgeo_uniformly_mesh_get on the same thread.
+ * With matching_alpha=NULL the returned controls already contain the fixed values.
+ * Returns -3 for invalid indices, -4 for invalid seed size, -5 for invalid alpha.
+ */
+CPGEO_API int cpgeo_reconstruction_compute(
+    cpgeo_handle_t tree, const double* controls, int num_controls, double seed_size, int iterations,
+    const int64_t* fixed_ids, int fixed_count, const double* matching_alpha, int64_t* new_ids,
+    double* fixed_xyz, int* num_vertices, int* num_faces
 );
 
 /**

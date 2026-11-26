@@ -53,16 +53,29 @@ class CPGEO:
     def initialize(self):
         """Initialize the knot points and thresholds based on the control points."""
         
-        self._knots = self._initialize_knots(faces=self._cp_faces)
-        self._thresholds = capi.compute_thresholds(
-            knots=self._knots,
-            k=self._knot_influence_num,)
-        
-        if self._space_tree is not None:
-            capi.space_tree_destroy(self._space_tree)
-        self._space_tree = capi.space_tree_create(knots=self._knots,
-                                                  thresholds=self._thresholds)
-        
+        self._replace_control_mesh(self._control_points, self._cp_faces)
+
+    def _replace_control_mesh(self, points, faces, matching_alpha=None, fixed_points=None):
+        knots = capi.initialize_knots(faces, len(points))
+        if not 0 < self._knot_influence_num < len(knots):
+            raise ValueError("knot_influence_num must be between 1 and the number of knots minus one")
+        thresholds = capi.compute_thresholds(knots, self._knot_influence_num)
+        tree = capi.space_tree_create(knots, thresholds)
+        if not tree:
+            raise RuntimeError("Could not create the reference mesh space tree")
+        try:
+            if matching_alpha is not None:
+                points = capi.fit_reconstructed_control_points(tree, points, matching_alpha, fixed_points)
+        except BaseException:
+            capi.space_tree_destroy(tree)
+            raise
+
+        old_tree = self._space_tree
+        self._control_points, self._cp_faces = points, faces
+        self._knots, self._thresholds, self._space_tree = knots, thresholds, tree
+        if old_tree is not None:
+            capi.space_tree_destroy(old_tree)
+
     def get_weights3(self, query_points: np.ndarray, derivative: int = 0):
         """
         Get the weights of control points for given query points.
@@ -189,11 +202,16 @@ class CPGEO:
         Returns:
             np.ndarray: The mapped points in physical coordinates, shape (N, 3).
         """
+        if derivative == 0:
+            if self._space_tree is None:
+                raise RuntimeError("Initialize the surface before mapping points")
+            return capi.map_points(points, self._space_tree, self._control_points)
         points_plane = self.reference_to_curvilinear(points)
         return self.map2(points_plane, derivative=derivative)
     
 
-    def uniformly_mesh(self, init_vertices: np.ndarray = None, seed_size: float = 1.0, max_iterations: int = 10):
+    def uniformly_mesh(self, init_vertices: np.ndarray = None, seed_size: float = 1.0,
+                       max_iterations: int = 10, *, fixed_count: int = 0):
         """
         Run uniform remeshing using the C API wrapper `capi.uniformly_mesh`.
 
@@ -201,58 +219,38 @@ class CPGEO:
             init_vertices (np.ndarray, optional): Initial sphere vertices (N,3). If None, uses current knots as starting vertices.
             seed_size (float): Desired seed size for remeshing.
             max_iterations (int): Maximum number of uniforming iterations.
+            fixed_count (int): Preserve this many leading seeds throughout remeshing.
 
         Returns:
             Tuple[np.ndarray, np.ndarray]: (vertices (M,3), faces (F,3)) from the remeshing.
         """
-        # Ensure control points are present
-        if self._control_points is None or self._control_points.size == 0:
-            raise RuntimeError("Control points are not set. Call CPGEO(...) with valid control points.")
-
-        # If no initial vertices provided, use current knots (initialize if needed)
-        if init_vertices is None:
-            if self._knots is None or self._knots.size == 0:
-                self.initialize()
-            init_vertices = self._knots
-
-        # Ensure space tree exists
         if self._space_tree is None:
             self.initialize()
+        return capi.uniformly_mesh(self._knots if init_vertices is None else init_vertices,
+                                   self._control_points, self._space_tree, seed_size, max_iterations,
+                                   fixed_count=fixed_count, compact_faces=True)
 
-        new_vertices, new_faces = capi.uniformly_mesh(
-            init_vertices,
-            self._control_points,
-            self._space_tree,
-            seed_size,
-            max_iterations
+    def refine_surface(self, seed_size: float = 1.0, max_iterations: int = 10,
+                       *, matching_alpha: float | None = 0.1, fixed_control_indices=None):
+        """Reconstruct the surface and fit its control points to samples of the old surface.
+
+        matching_alpha weights squared control-point displacement relative to squared
+        sample mismatch. Zero gives an unregularized fit. None skips the fit.
+
+        fixed_control_indices selects rows of the current control_points array.
+        Their XYZ coordinates are copied exactly. Returns their new indices in
+        the supplied order for the next reconstruction, or None if omitted.
+        The reference knots are reparameterized as usual.
+        """
+        if self._space_tree is None:
+            self.initialize()
+        targets, faces, fixed, new_ids = capi.prepare_reconstruction(
+            self._space_tree, self._control_points, seed_size, max_iterations,
+            fixed_control_indices, matching_alpha,
         )
-
-        new_faces = new_faces[:, [0, 2, 1]]
-
-
-        index_remain = np.unique(new_faces.flatten())
-
-        new_vertices = new_vertices[index_remain]
-        index_mapping = np.zeros((index_remain.max() + 1,), dtype=int)
-        index_mapping[index_remain] = np.arange(len(index_remain))
-        new_faces = index_mapping[new_faces]
-
-        return new_vertices, new_faces    
-
-
-    def refine_surface(self, seed_size: float = 1.0, max_iterations: int = 10):
-        new_vertices, new_faces = self.uniformly_mesh(init_vertices=self._knots, seed_size=seed_size, max_iterations=max_iterations)
-        
-        new_control_points = self.map3(new_vertices)
-
-        self._control_points = new_control_points
-        self._cp_faces = new_faces
-
-        self.initialize()
-
-        # new_cps = self._post_process()
-
-        # self._control_points = new_cps
+        self._replace_control_mesh(targets, faces, matching_alpha, fixed)
+        self._symmetry_points_match = None
+        return new_ids
 
     def reconstruct_symmetry(self,
                              mode: str = "axial",
@@ -450,145 +448,6 @@ class CPGEO:
         x[ind_inf, 1] = 0
 
         return x
-
-    @staticmethod
-    def _split_mesh(faces: np.ndarray):
-        num_points = np.unique(faces.flatten()).shape[0]
-
-        
-
-        import networkx as nx
-
-        # using dijkstra algorithm to split the faces into two parts
-        edges_with_counts = capi.get_mesh_edges(faces)
-        edges0 = edges_with_counts[:, :2]
-        edge_count = edges_with_counts[:, 2]
-        G = nx.Graph()
-        G.add_edges_from(edges0)
-        shortest_path = nx.single_source_dijkstra(G, 50)
-        keys = np.array(list(shortest_path[0].keys()))
-        values = np.array(list(shortest_path[0].values()))
-        mid_values = values[round(len(values) / 2)]
-        thre = mid_values
-        while True:
-            index_half1 = np.array(keys[values<thre])
-
-            faces1_index = (np.isin(faces,
-                                            index_half1).sum(axis=1) == 3)
-            faces1 = faces[faces1_index]
-            faces2 = faces[~faces1_index]
-
-            boundary_points_index = capi.extract_boundary_loops(faces1)
-            if len(boundary_points_index) == 1:
-                break
-            thre = int(thre / 1.5)
-            if thre == 0:
-                thre = mid_values - 1
-
-        if index_half1.shape[0] < num_points / 2:
-            index_half1 = np.array(
-                list((set(range(num_points)) - set(index_half1.tolist()))))
-        
-        faces1_index = (np.isin(faces,
-                                        index_half1).sum(axis=1) == 3)
-        return index_half1, boundary_points_index[0], faces1, faces2
-
-    def _initialize_knots(self, faces: np.ndarray):
-
-        num_points = np.unique(faces.flatten()).shape[0]
-
-        knots_cur = np.stack([np.linspace(-1, 1, num=int(np.ceil(num_points))),
-                              np.linspace(-1, 1, num=int(np.ceil(num_points)))], axis=1)
-
-        index_half1, boundary_points_index, faces1, faces2 = CPGEO._split_mesh(faces)
-
-        index_half1_ = np.array(
-            list(
-                set(index_half1.tolist()) -
-                set(boundary_points_index.tolist())))
-
-        phi0 = np.arccos(1 - 2 * index_half1_.shape[0] / num_points)
-        r0 = 2 * np.sin(phi0) / (1 + np.cos(phi0))
-
-        theta = (np.arange(0, boundary_points_index.shape[0]) / boundary_points_index.shape[0]) * 2 * np.pi
-        knots_cur[boundary_points_index] = r0 * np.stack(
-            [np.cos(theta), np.sin(theta)], axis=1)
-
-        # map from the z+
-        knots_cur = utils.mesh_regulation_2D(
-            knots_cur, faces, index_half1_)
-
-        index_extra = np.where(np.linalg.norm(knots_cur, axis=1) > 0.7 * r0)[0]
-
-        index_half2 = np.array(
-            list((set(range(num_points)) - set(index_half1_.tolist())).union(
-                set(index_extra.tolist()))))
-
-        
-        knots3 = self.curvilinear_to_reference(knots_cur)[0]
-        knots3[:, 2] *= -1
-        knots_cur = self.reference_to_curvilinear(knots3)
-
-        # refine the other semi-sphere
-        knots_cur = utils.mesh_regulation_2D(
-            knots_cur, faces, index_half2)
-
-        # refine the x+
-        knots3 = self.curvilinear_to_reference(knots_cur)[0]
-        knots3 = knots3[:, [1,2,0]]
-        knots_cur = self.reference_to_curvilinear(knots3)
-        norms = np.linalg.norm(knots_cur, axis=1)
-        threshold = np.sort(norms)[int(knots_cur.shape[0] * 0.9)]
-        index_now = np.where(norms < threshold)[0]
-        knots_cur = utils.mesh_regulation_2D(
-            knots_cur, faces, index_now)
-        
-        # refine the x-
-        knots3 = self.curvilinear_to_reference(knots_cur)[0]
-        knots3[:, 2] *= -1
-        knots_cur = self.reference_to_curvilinear(knots3)
-        norms = np.linalg.norm(knots_cur, axis=1)
-        threshold = np.sort(norms)[int(knots_cur.shape[0] * 0.9)]
-        index_now = np.where(norms < threshold)[0]
-        knots_cur = utils.mesh_regulation_2D(
-            knots_cur, faces, index_now)
-        
-        # refine the y+
-        knots3 = self.curvilinear_to_reference(knots_cur)[0]
-        knots3[:, 2] *= -1
-        knots3 = knots3[:, [1,2,0]]
-        knots_cur = self.reference_to_curvilinear(knots3)
-        norms = np.linalg.norm(knots_cur, axis=1)
-        threshold = np.sort(norms)[int(knots_cur.shape[0] * 0.9)]
-        index_now = np.where(norms < threshold)[0]
-        knots_cur = utils.mesh_regulation_2D(
-            knots_cur, faces, index_now)
-        
-        # refine the y-
-        knots3 = self.curvilinear_to_reference(knots_cur)[0]
-        knots3[:, 2] *= -1
-        knots_cur = self.reference_to_curvilinear(knots3)
-        norms = np.linalg.norm(knots_cur, axis=1)
-        threshold = np.sort(norms)[int(knots_cur.shape[0] * 0.9)]
-        index_now = np.where(norms < threshold)[0]
-        knots_cur = utils.mesh_regulation_2D(
-            knots_cur, faces, index_now)
-        
-        # finally get the knots
-        knots3 = self.curvilinear_to_reference(knots_cur)[0]
-        knots3 = knots3[:, [1,2,0]]
-
-        # make sure all faces are outward
-        face_normals = np.cross(
-            knots3[faces[:, 1]] - knots3[faces[:, 0]],
-            knots3[faces[:, 2]] - knots3[faces[:, 0]])
-        face_centers = (knots3[faces[:, 0]] + knots3[faces[:, 1]] + knots3[faces[:, 2]]) / 3
-        dot_products = np.einsum('fi,fi->f', face_normals, face_centers)
-        index_flip = np.where(dot_products < 0)[0]
-        if index_flip.shape[0] > 0:
-            faces[index_flip, 1], faces[index_flip, 2] = faces[index_flip, 2], faces[index_flip, 1]
-        
-        return knots3
 
     def __del__(self):
         """Destructor: ensure the C space tree is destroyed when the Python object is garbage collected."""

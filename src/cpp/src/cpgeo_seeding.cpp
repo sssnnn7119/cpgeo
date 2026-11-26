@@ -1,3 +1,4 @@
+#include "csr_cg.h"
 #include "cpgeo_seeding.h"
 #include <algorithm>
 #include <iostream>
@@ -98,7 +99,7 @@ static bool can_collapse(int a, int b, const std::array<double, 3>& midpoint,
 
 static std::vector<int> insert_delete_points(std::vector<double>& vertices_sphere,
                                              std::span<const double> control_points, SpaceTree& tree,
-                                             double seed_size) {
+                                             double seed_size, int fixed_count) {
     if (!(seed_size > 0.0) || !std::isfinite(seed_size))
         throw std::invalid_argument("seed_size must be finite and positive");
 
@@ -106,6 +107,14 @@ static std::vector<int> insert_delete_points(std::vector<double>& vertices_spher
     triangulator.triangulate();
     std::vector<int> faces(triangulator.size() * 3);
     triangulator.getTriangleIndices(faces);
+
+    if (fixed_count > 0) {
+        std::vector<bool> retained(fixed_count);
+        for (int v : faces)
+            if (v < fixed_count) retained[v] = true;
+        if (std::find(retained.begin(), retained.end(), false) != retained.end())
+            throw std::runtime_error("Triangulation omitted a fixed control seed");
+    }
 
     // A split batch can grow the mesh by at most half its current vertices.
     // Pure coarsening rounds strictly reduce the vertex count.
@@ -136,7 +145,7 @@ static std::vector<int> insert_delete_points(std::vector<double>& vertices_spher
             const double* p = mapped.data() + 3 * a;
             const double* q = mapped.data() + 3 * b;
             double length = std::hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
-            if (length < 0.5 * seed_size)
+            if (a >= fixed_count && b >= fixed_count && length < 0.5 * seed_size)
                 short_edges.push_back({length, a, b});
             if (length > 1.5 * seed_size)
                 long_edges.push_back({length, a, b});
@@ -322,69 +331,6 @@ static SmoothingSystem assemble_uv_system(
     return system;
 }
 
-// Solve A*x = b with the symmetrically scaled CSR Hessian.
-static bool conjugate_gradient(
-    const std::vector<int>& csr_row_ptr, const std::vector<int>& csr_col_idx,
-    const std::vector<double>& csr_values, const std::vector<double>& b,
-    std::vector<double>& x, int max_iter = 1000, double tol = 1e-6)
-{
-    const int n = static_cast<int>(b.size());
-    x.assign(n, 0.0);
-    std::vector<double> r = b, p = b, Ap(n);
-
-    double rs_old = 0.0;
-    for (double value : r) rs_old += value * value;
-    if (std::sqrt(rs_old) < tol) return true;
-
-    // Each mesh row is short. Give each worker enough rows to amortize
-    // the dot-product barriers, and keep one team for the whole solve.
-    constexpr int rows_per_thread = 4096;
-    const int threads = std::min(omp_get_max_threads(), std::max(1, n / rows_per_thread));
-    double pAp = 0.0, rs_new = 0.0;
-    bool converged = false;
-    #pragma omp parallel if(threads > 1) num_threads(threads)
-    {
-        for (int iter = 0; iter < max_iter; ++iter) {
-            #pragma omp for schedule(static) reduction(+:pAp)
-            for (int i = 0; i < n; ++i) {
-                double sum = 0.0;
-                for (int j = csr_row_ptr[i]; j < csr_row_ptr[i + 1]; ++j) {
-                    sum += csr_values[j] * p[csr_col_idx[j]];
-                }
-                Ap[i] = sum;
-                pAp += p[i] * sum;
-            }
-            if (std::abs(pAp) < 1e-20) break;
-
-            const double alpha = rs_old / pAp;
-            #pragma omp for schedule(static) reduction(+:rs_new)
-            for (int i = 0; i < n; ++i) {
-                x[i] += alpha * p[i];
-                r[i] -= alpha * Ap[i];
-                rs_new += r[i] * r[i];
-            }
-            if (std::sqrt(rs_new) < tol) {
-                #pragma omp single nowait
-                {
-                    converged = true;
-                }
-                break;
-            }
-            const double beta = rs_new / rs_old;
-            #pragma omp for schedule(static)
-            for (int i = 0; i < n; ++i) p[i] = r[i] + beta * p[i];
-
-            #pragma omp single
-            {
-                rs_old = rs_new;
-                rs_new = 0.0;
-                pAp = 0.0;
-            }
-        }
-    }
-    return converged;
-}
-
 // Compute loss only (without derivatives)
 static double compute_loss_only(
     std::vector<double>& vertices_sphere,
@@ -436,6 +382,7 @@ static std::tuple<bool, double, double> backtracking_line_search(
     const std::span<const double> control_points,
     std::span<const int> edges,
     bool north_pole,
+    int fixed_count,
     int max_backtracks = 30,
     double beta = 0.5,
     bool check_volume = true
@@ -447,7 +394,7 @@ static std::tuple<bool, double, double> backtracking_line_search(
         // Apply update: convert delta_uv to sphere coordinates
         vertices_sphere = vertices_backup; // restore
         
-        for (int ptidx = 0; ptidx < num_points; ptidx++) {
+        for (int ptidx = fixed_count; ptidx < num_points; ptidx++) {
             // Get current sphere position
             std::array<double, 3> sphere_pos = {
                 vertices_sphere[ptidx * 3 + 0],
@@ -508,14 +455,14 @@ static std::vector<double> newton_step(
     SpaceTree& tree, 
     std::span<const double> control_points, 
     std::span<const int> edges, 
-    bool north_pole
+    bool north_pole, int fixed_count
 ){
 
     auto [r, rdu, rdu2] = map_points_batch_derivative2(vertices_sphere, tree, control_points, north_pole);
     const int num_points = static_cast<int>(vertices_sphere.size() / 3);
     std::vector<int> active_index(num_points, -1);
     int active_count = 0;
-    for (int i = 0; i < num_points; ++i) {
+    for (int i = fixed_count; i < num_points; ++i) {
         double z = vertices_sphere[3 * i + 2];
         if (north_pole ? z < 0.7 : z > -0.7) active_index[i] = active_count++;
     }
@@ -605,11 +552,16 @@ static std::vector<double> newton_step(
     return delta_uv;
 }
 
+void vertice_smoothing(std::vector<double>& vertices_sphere, std::span<int> faces,
+                       std::span<const double> control_points, SpaceTree& tree) {
+    vertice_smoothing(vertices_sphere, faces, control_points, tree, 0);
+}
+
 void vertice_smoothing(
     std::vector<double>& vertices_sphere,
     std::span<int> faces,
     std::span<const double> control_points,
-    SpaceTree& tree
+    SpaceTree& tree, int fixed_count
 ){
     auto edges_map = extractEdgesWithNumber(faces);
 
@@ -649,7 +601,7 @@ void vertice_smoothing(
         }
         
         // Compute newton step (returns delta in UV space)
-        auto delta_uv = newton_step(vertices_sphere, tree, control_points, std::span<const int>(edges.data(), edges.size()), north_pole);
+        auto delta_uv = newton_step(vertices_sphere, tree, control_points, std::span<const int>(edges.data(), edges.size()), north_pole, fixed_count);
 
 
         
@@ -682,7 +634,7 @@ void vertice_smoothing(
         auto [step_accepted, step_size, new_loss] = backtracking_line_search(
             vertices_sphere, vertices_backup, delta_uv, current_loss, initial_volume,
             faces, tree, control_points, std::span<const int>(edges.data(), edges.size()),
-            north_pole, max_backtracks, beta, true
+            north_pole, fixed_count, max_backtracks, beta, true
         );
         
         if (step_accepted) {
@@ -699,17 +651,25 @@ void vertice_smoothing(
 
 
 std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
+    std::span<double> init_vertices_sphere, std::span<const double> control_points,
+    SpaceTree& tree, double seed_size, int max_iterations) {
+    return uniformlyMesh(init_vertices_sphere, control_points, tree, seed_size, max_iterations, 0);
+}
+
+std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
     std::span<double> init_vertices_sphere, 
     std::span<const double> control_points,
     SpaceTree& tree,
     double seed_size,
-    int max_iterations
+    int max_iterations, int fixed_count
 ){
+    if (fixed_count < 0 || static_cast<size_t>(fixed_count) > init_vertices_sphere.size() / 3)
+        throw std::invalid_argument("Invalid fixed seed count");
 
     std::vector<double> vertices_sphere(init_vertices_sphere.begin(), init_vertices_sphere.end());
 
     // insert/delete points
-    auto faces = insert_delete_points(vertices_sphere, control_points, tree, seed_size);
+    auto faces = insert_delete_points(vertices_sphere, control_points, tree, seed_size, fixed_count);
 
     std::vector<double> r;
 
@@ -717,7 +677,7 @@ std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
         std::cout << "  - Mesh uniforming loop " << loop + 1 << "/" << max_iterations << std::endl;
 
         // refine mesh by vertex smoothing
-        vertice_smoothing(vertices_sphere, faces, control_points, tree);
+        vertice_smoothing(vertices_sphere, faces, control_points, tree, fixed_count);
 
         // refine mesh by edge flipping
         r = map_points_batch(vertices_sphere, tree, control_points);

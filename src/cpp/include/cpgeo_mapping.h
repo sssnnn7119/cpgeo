@@ -127,7 +127,8 @@ namespace cpgeo {
         bool north_pole = true
     );
 
-    /** perform stereographic projection from 3D sphere to 2D plane for batch of points
+    /** Map a batch of unit-sphere points directly to physical coordinates.
+        The chart choice is immaterial for this zero-order evaluation.
         @param query_point array of size (num_queries * 3) representing 3D coordinates on the sphere
         @param tree SpaceTree instance for querying knot influences
         @param controlpoints Flat array of 3D control point coordinates [x0,y0

@@ -28,6 +28,9 @@ void vertice_smoothing(
     SpaceTree& tree
 );
 
+void vertice_smoothing(std::vector<double>& vertices_sphere, std::span<int> faces,
+                       std::span<const double> control_points, SpaceTree& tree, int fixed_count);
+
 /** 
  * @brief Generate a uniformly meshed sphere surface based on initial vertices and control points
  * 
@@ -47,4 +50,10 @@ std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
     double seed_size,
     int max_iterations
 );
+
+// Stable compaction keeps the first fixed_count seeds in input order.
+std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
+    std::span<double> init_vertices_sphere, std::span<const double> control_points,
+    SpaceTree& tree, double seed_size, int max_iterations, int fixed_count);
+
 } // namespace cpgeo
