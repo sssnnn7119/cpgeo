@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
 #include <map>
 #include <numbers>
 #include <numeric>
@@ -25,6 +26,58 @@ std::array<T, 3> cube_point(int face, T extent, T u, T v) {
     point[(axis + 2) % 3] = v;
     return point;
 }
+
+// Rectangular lattice for the four sides and two caps. The same integer
+// coordinates identify seam poles and validation samples in adjacent tiles.
+struct PatchAtlas {
+    int bands = 1;
+    XYZ north{}, tangent{}, bitangent{};
+    double inverse_pole = 0, north_radius = 0, south_radius = 0;
+
+    int faces() const { return 4*bands + 2; }
+
+    template<class T>
+    std::array<T, 3> lattice(int patch, T extent, T u, T v) const {
+        if (patch < 4*bands) {
+            auto p = cube_point(patch % 4, extent, u, v);
+            p[2] += (2*(patch/4) + 1 - bands)*extent;
+            return p;
+        }
+        auto p = cube_point(4 + patch - 4*bands, extent, u, v);
+        p[2] *= bands;
+        return p;
+    }
+
+    XYZ sphere_point(int patch, double u, double v) const {
+        auto p = lattice(patch, 1.0, u, v);
+        if (north_radius == 0) {
+            double norm = std::hypot(p[0], p[1], p[2]);
+            for (double& x : p) x /= norm;
+            return p;
+        }
+        // Homogeneous stereographic coordinates w/d. Linear square end caps
+        // meet logarithmically spaced side bands along identical curves.
+        std::complex<double> xy(p[0], p[1]), w, d = 1.0;
+        if (patch == 4*bands) {
+            w = north_radius * xy;
+        } else if (patch == 4*bands + 1) {
+            w = 1.0;
+            d = south_radius * std::conj(xy);
+        } else {
+            double r = std::abs(xy), t = (1.0 + p[2]/bands)/2;
+            double log_radius = t*std::log(north_radius*r) - (1-t)*std::log(south_radius*r);
+            w = (std::exp(log_radius)/r)*xy;
+        }
+        // Möbius transform taking 0 and infinity to the two knot clusters.
+        d += inverse_pole*w;
+        double scale = std::norm(d) + std::norm(w);
+        auto lateral = 2.0*w*std::conj(d);
+        for (int i = 0; i < 3; ++i)
+            p[i] = ((std::norm(d)-std::norm(w))*north[i] + lateral.real()*tangent[i]
+                    + lateral.imag()*bitangent[i]) / scale;
+        return p;
+    }
+};
 
 struct Basis {
     int first;
@@ -55,30 +108,29 @@ Basis cubic(double t, int spans) {
     return basis;
 }
 
-std::vector<double> sample_face(int face, const std::vector<double>& parameters,
+std::vector<double> sample_face(const PatchAtlas& atlas, int face, const std::vector<double>& parameters,
                                 cpgeo::SpaceTree& tree, std::span<const double> controls) {
     std::vector<double> points;
     points.reserve(3 * parameters.size() * parameters.size());
     for (double u : parameters) {
         for (double v : parameters) {
-            auto p = cube_point(face, 1.0, 2*u - 1, 2*v - 1);
-            double norm = std::hypot(p[0], p[1], p[2]);
-            for (double x : p) points.push_back(x / norm);
+            auto p = atlas.sphere_point(face, 2*u - 1, 2*v - 1);
+            points.insert(points.end(), p.begin(), p.end());
         }
     }
     return cpgeo::map_points_batch(points, tree, controls);
 }
 
-std::vector<double> fit(cpgeo::SpaceTree& tree, std::span<const double> controls, int spans) {
+std::vector<double> fit(const PatchAtlas& atlas, cpgeo::SpaceTree& tree, std::span<const double> controls, int spans) {
     const int n = spans + 3;
     std::map<GridPoint, int> global;
     std::vector<int> indices;
     std::vector<bool> corner;
     // Identify identical control variables on edges, including reversed edges.
-    for (int f = 0; f < 6; ++f) {
+    for (int f = 0; f < atlas.faces(); ++f) {
         for (int i = 0; i < n; ++i) {
             for (int j = 0; j < n; ++j) {
-                auto key = cube_point(f, n-1, 2*i-(n-1), 2*j-(n-1));
+                auto key = atlas.lattice(f, n-1, 2*i-(n-1), 2*j-(n-1));
                 auto [it, inserted] = global.try_emplace(key, static_cast<int>(global.size()));
                 if (inserted) corner.push_back((i == 0 || i == n-1) && (j == 0 || j == n-1));
                 indices.push_back(it->second);
@@ -99,13 +151,13 @@ std::vector<double> fit(cpgeo::SpaceTree& tree, std::span<const double> controls
     }
 
     // The tensor-product normal matrix on one patch is the Kronecker product
-    // of the two 1-D Gram matrices. Assemble all six into the shared variables.
+    // of the two 1-D Gram matrices. Assemble patches into the shared variables.
     const int count = static_cast<int>(global.size());
     std::vector<std::map<int, double>> matrix(count);
     std::vector<XYZ> rhs(count), poles(count);
-    for (int f = 0; f < 6; ++f) {
+    for (int f = 0; f < atlas.faces(); ++f) {
         const int* ids = indices.data() + f*n*n;
-        auto target = sample_face(f, parameters, tree, controls);
+        auto target = sample_face(atlas, f, parameters, tree, controls);
         for (int i = 0; i < samples; ++i) {
             for (int j = 0; j < samples; ++j) {
                 const double* p = target.data() + 3*(i*samples+j);
@@ -173,7 +225,7 @@ XYZ cross(const XYZ& a, const XYZ& b) {
 
 // Eight subintervals per knot span, including knot lines and the patch boundary.
 // Match seam samples by cube coordinates; compare all three normals at corners.
-std::array<double, 3> validate(const std::vector<double>& poles, int spans,
+std::array<double, 3> validate(const PatchAtlas& atlas, const std::vector<double>& poles, int spans,
                                cpgeo::SpaceTree& tree, std::span<const double> controls) {
     const int n = spans + 3, extent = 8*spans;
     std::vector<double> parameters;
@@ -185,8 +237,8 @@ std::array<double, 3> validate(const std::vector<double>& poles, int spans,
     const int samples = extent + 1;
     double max_error = 0, sum_squared = 0, max_angle = 0;
     std::map<GridPoint, std::vector<XYZ>> normals;
-    for (int f = 0; f < 6; ++f) {
-        auto targets = sample_face(f, parameters, tree, controls);
+    for (int f = 0; f < atlas.faces(); ++f) {
+        auto targets = sample_face(atlas, f, parameters, tree, controls);
         for (int i = 0; i < samples; ++i) {
             for (int j = 0; j < samples; ++j) {
                 XYZ p{}, du{}, dv{};
@@ -213,7 +265,7 @@ std::array<double, 3> validate(const std::vector<double>& poles, int spans,
                     double norm = std::hypot(normal[0],normal[1],normal[2]);
                     if (!(norm > 0) || !std::isfinite(norm)) throw std::runtime_error("Singular seam");
                     for (double& x : normal) x /= norm;
-                    auto& others = normals[cube_point(f, extent, 2*i-extent, 2*j-extent)];
+                    auto& others = normals[atlas.lattice(f, extent, 2*i-extent, 2*j-extent)];
                     for (const auto& other : others) {
                         auto sine = cross(normal, other);
                         double cosine = std::inner_product(normal.begin(), normal.end(), other.begin(), 0.0);
@@ -224,11 +276,10 @@ std::array<double, 3> validate(const std::vector<double>& poles, int spans,
             }
         }
     }
-    return {max_error, std::sqrt(sum_squared/(6*samples*samples)), max_angle*180/std::numbers::pi};
+    return {max_error, std::sqrt(sum_squared/(double(atlas.faces())*samples*samples)), max_angle*180/std::numbers::pi};
 }
-} // namespace
 
-extern "C" CPGEO_API int cpgeo_fit_bspline_patches(cpgeo_handle_t handle, const double* controls,
+int fit_patches(const PatchAtlas& atlas, cpgeo_handle_t handle, const double* controls,
     int count, int spans, double* out_poles, double* out_metrics) {
     if (!handle || !controls || !out_poles || !out_metrics || count <= 0 || spans < 1 || spans > 128)
         return -1;
@@ -240,13 +291,95 @@ extern "C" CPGEO_API int cpgeo_fit_bspline_patches(cpgeo_handle_t handle, const 
             centered[i] = controls[i] - controls[i%3];
             if (!std::isfinite(centered[i])) return -1;
         }
-        auto poles = fit(tree, centered, spans);
+        auto poles = fit(atlas, tree, centered, spans);
         for (size_t i = 0; i < poles.size(); ++i) poles[i] += controls[i%3];
-        auto metrics = validate(poles, spans, tree, {controls, centered.size()});
+        auto metrics = validate(atlas, poles, spans, tree, {controls, centered.size()});
         std::copy(poles.begin(), poles.end(), out_poles);
         std::copy(metrics.begin(), metrics.end(), out_metrics);
         return 0;
     } catch (...) {
         return -2;
     }
+}
+
+} // namespace
+
+extern "C" CPGEO_API int cpgeo_fit_bspline_patches(cpgeo_handle_t handle, const double* controls,
+    int count, int spans, double* out_poles, double* out_metrics) {
+    return fit_patches({}, handle, controls, count, spans, out_poles, out_metrics);
+}
+
+extern "C" CPGEO_API int cpgeo_fit_banded_bspline_patches(cpgeo_handle_t handle, const double* controls,
+    int count, int spans, const double* chart, int bands, double* out_poles, double* out_metrics) {
+    if (!chart || bands < 1 || bands > 32) return -1;
+    PatchAtlas atlas;
+    atlas.bands = bands;
+    // The caller supplies an orthonormal (north,tangent,bitangent) frame.
+    std::copy_n(chart, 3, atlas.north.begin());
+    std::copy_n(chart + 3, 3, atlas.tangent.begin());
+    std::copy_n(chart + 6, 3, atlas.bitangent.begin());
+    atlas.inverse_pole = chart[9];
+    atlas.north_radius = chart[10];
+    atlas.south_radius = chart[11];
+    if (!std::all_of(chart, chart+12, [](double x) { return std::isfinite(x); })
+        || !(atlas.north_radius > 0) || !(atlas.south_radius > 0)) return -1;
+    return fit_patches(atlas, handle, controls, count, spans, out_poles, out_metrics);
+}
+
+// Map increasing cube coordinates (u,v) in [0,1]^2 to the reference sphere.
+// On negative faces the two free axes exchange places to keep outward winding.
+extern "C" CPGEO_API int cpgeo_patch_reference(int face, const double* chart,
+    const double* uv, int count, double* xyz) {
+    if (face < 0 || face >= 6 || !uv || !xyz || count < 0) return -1;
+    PatchAtlas atlas;
+    if (chart) {
+        std::copy_n(chart, 3, atlas.north.begin());
+        std::copy_n(chart + 3, 3, atlas.tangent.begin());
+        std::copy_n(chart + 6, 3, atlas.bitangent.begin());
+        atlas.inverse_pole = chart[9];
+        atlas.north_radius = chart[10];
+        atlas.south_radius = chart[11];
+    }
+    for (int i = 0; i < count; ++i) {
+        double u = 2*uv[2*i]-1, v = 2*uv[2*i+1]-1;
+        auto q = face % 2 ? atlas.sphere_point(face,-v,u) : atlas.sphere_point(face,u,v);
+        std::copy(q.begin(), q.end(), xyz+3*i);
+    }
+    return 0;
+}
+
+// Cubic clamped interpolation at all simple knots, with prescribed first
+// derivatives at both ends. At an interior knot only three poles contribute.
+// Factor that tridiagonal matrix once for all coordinate columns.
+extern "C" CPGEO_API int cpgeo_interpolate_cubic(const double* breaks, int size,
+    const double* data, int columns, double* poles) {
+    if (!breaks || !data || !poles || size < 2 || columns < 1) return -1;
+    for (int i = 0; i < size; ++i)
+        if (!std::isfinite(breaks[i]) || (i && breaks[i] <= breaks[i-1])) return -1;
+    try {
+        auto knot = [&](int i) { return breaks[std::clamp(i,0,size-1)]; };
+        auto row = [columns](int i) { return static_cast<size_t>(columns)*i; };
+        // Data rows: left derivative, knot values, right derivative.
+        for (int c = 0; c < columns; ++c) {
+            poles[c] = data[row(1)+c];
+            poles[row(1)+c] = poles[c]+(knot(1)-knot(0))*data[c]/3;
+            poles[row(size+1)+c] = data[row(size)+c];
+            poles[row(size)+c] = poles[row(size+1)+c] -
+                (knot(size-1)-knot(size-2))*data[row(size+1)+c]/3;
+        }
+        std::vector<double> upper(size);
+        for (int i = 1; i < size-1; ++i) {
+            const double left = knot(i)-knot(i-1), right = knot(i+1)-knot(i);
+            double a = right*right / ((left+right)*(knot(i+1)-knot(i-2)));
+            double c = left*left / ((left+right)*(knot(i+2)-knot(i-1)));
+            double diag = 1-a-c-a*upper[i-1];
+            upper[i] = c/diag;
+            for (int d = 0; d < columns; ++d)
+                poles[row(i+1)+d] = (data[row(i+1)+d]-a*poles[row(i)+d])/diag;
+        }
+        for (int i = size-2; i >= 1; --i)
+            for (int d = 0; d < columns; ++d)
+                poles[row(i+1)+d] -= upper[i]*poles[row(i+2)+d];
+        return 0;
+    } catch (...) { return -2; }
 }

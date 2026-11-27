@@ -210,30 +210,35 @@ class CPGEO:
         return self.map2(points_plane, derivative=derivative)
     
 
-    def fit_bspline_patches(self, tolerance: float = 0.01, *, max_spans: int = 64):
-        """Fit six bicubic patches to a sampled maximum position error in model units.
+    def fit_bspline_patches(self, tolerance: float = 0.01, *, max_spans: int = 64, target_nodes: int = 64):
+        """Fit closed bicubic patches to a sampled maximum position error in model units.
 
-        Double the number of uniform spans up to max_spans per axis. The result
-        includes the sampled errors and seam angle and can be written as STEP.
+        Partition crowded root charts by reference node count and refine their
+        spline intervals by measured error, up to max_spans per patch axis.
+        target_nodes (default 64) guides the initial partition. Smooth siblings
+        may merge and under-resolved tiles may split further. Adaptive results
+        include each tile's knot vectors, parameter bounds and source-node count.
         """
-        from .bspline import BSplinePatches
+        from .adaptive_patches import _locate, adaptive_fit
+        from .bspline import BSplinePatches, axial_chart
 
         if not np.isfinite(tolerance) or tolerance <= 0:
             raise ValueError("tolerance must be finite and positive")
         if not isinstance(max_spans, (int, np.integer)) or not 1 <= max_spans <= 128:
             raise ValueError("max_spans must be an integer between 1 and 128")
+        if not isinstance(target_nodes, (int, np.integer)) or target_nodes < 1:
+            raise ValueError("target_nodes must be a positive integer")
         if self._space_tree is None:
             self.initialize()
-        spans = min(4, max_spans)
-        while True:
+        chart = axial_chart(self._knots, self._thresholds)
+        faces, uv = _locate(self._knots, None if chart is None else chart[0])
+        # Retain the inexpensive six-face result for simple, sparse surfaces.
+        if chart is None and np.bincount(faces, minlength=6).max() <= target_nodes:
+            spans = min(4, max_spans)
             poles, metrics = capi.fit_bspline_patches(self._space_tree, self.control_points, spans)
-            fit = BSplinePatches(poles, *metrics)
-            if fit.max_error <= tolerance:
-                return fit
-            if spans == max_spans:
-                raise ValueError(f"Sampled maximum error {fit.max_error:g} exceeds tolerance "
-                                 f"{tolerance:g} at {spans} spans per axis")
-            spans = min(2 * spans, max_spans)
+            if metrics[0] <= tolerance:
+                return BSplinePatches(poles, *metrics)
+        return adaptive_fit(self, chart, tolerance, max_spans, target_nodes, faces, uv)
 
     def uniformly_mesh(self, init_vertices: np.ndarray = None, seed_size: float = 1.0,
                        max_iterations: int = 10, *, fixed_count: int = 0):

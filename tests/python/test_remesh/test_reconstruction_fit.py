@@ -73,6 +73,19 @@ def test_refine_surface_matches_old_surface_samples():
         assert fitted.control_points[fixed_ids].tobytes() == original.tobytes()
 
 
+@pytest.mark.parametrize("free_count", [0, 1])
+def test_refine_splits_only_edges_with_a_free_endpoint(free_count):
+    mesh = pv.Icosphere(nsub=1)
+    model = CPGEO(mesh.points.copy(), mesh.regular_faces.copy(), knot_influence_num=6)
+    fixed = np.arange(mesh.n_points - free_count)
+    indices = model.refine_surface(0.15, 0, fixed_control_indices=fixed)
+    np.testing.assert_array_equal(model.control_points[indices], mesh.points[fixed])
+    if free_count:
+        assert len(model.control_points) > mesh.n_points
+    else:
+        assert len(model.control_points) == mesh.n_points
+
+
 @pytest.mark.parametrize("subdivisions, shift", [(0, 0), (1, 21)])
 def test_knot_initialization_preserves_consistent_face_winding(subdivisions, shift):
     # Exercise both the polar fallback and a chart with its first face near the pole.
@@ -104,3 +117,22 @@ def test_coarse_spherical_knots_and_face_writeback():
     angles = 2 * np.arctan2(det, 1 + (a*b + b*c + c*a).sum(axis=1))
     np.testing.assert_allclose(angles.sum(), 4 * np.pi)
     np.testing.assert_array_equal(storage[:, 1::2], 0)
+
+
+@pytest.mark.parametrize("iterations", [0, 2])
+def test_seed_refinement_preserves_spherical_orientation(iterations):
+    """Edge splits, flips and smoothing must leave an oriented closed parameter mesh."""
+    rng = np.random.default_rng(0)
+    sphere = rng.normal(size=(76, 3))
+    sphere /= np.linalg.norm(sphere, axis=1, keepdims=True)
+    radius = 1 + 0.25 * np.sin(5 * sphere[:, 2])
+    model = CPGEO(sphere * radius[:, None] * [1, 1, 4],
+                  capi.get_sphere_triangulation(sphere), knot_influence_num=8)
+
+    knots, faces = model.uniformly_mesh(seed_size=0.4, max_iterations=iterations)
+    a, b, c = knots[faces].transpose(1, 0, 2)
+    assert np.all(np.einsum("ij,ij->i", a, np.cross(b, c)) > 0)
+    edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    directed = {tuple(edge) for edge in edges}
+    assert len(directed) == len(edges)
+    assert all((j, i) in directed for i, j in directed)

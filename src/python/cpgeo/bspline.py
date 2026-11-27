@@ -1,4 +1,4 @@
-"""Six clamped bicubic patches on the cubed sphere."""
+"""Clamped bicubic patches fitted to a spherical CPGEO domain."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,30 +7,89 @@ from tempfile import TemporaryDirectory
 import numpy as np
 
 
+def axial_chart(knots, thresholds):
+    """Locate two dense knot clusters for an elongated spherical parameterization."""
+    moment = knots.T @ knots / len(knots)
+    values, axes = np.linalg.eigh(moment)
+    # An isotropic parameter sphere has second moments near 1/3.
+    if values[-1] < 0.68:
+        return None
+    direction = knots @ axes[:, -1]
+    poles, radii = [], []
+    for mask in (direction >= 0, direction < 0):
+        if not np.any(mask):
+            return None
+        scales = thresholds[mask]
+        smallest = scales.min()
+        if smallest <= 0 or np.quantile(scales, 0.9) < 16 * smallest:
+            return None
+        # Inverse support area emphasizes each cap's most compressed region.
+        center = (smallest / scales)**2 @ knots[mask]
+        poles.append(center / np.linalg.norm(center))
+        radii.append(min(0.25, 2 * smallest))
+    north, south = poles
+    cosine = np.dot(north, south)
+    if cosine >= 0:
+        return None
+    tangent = south - cosine * north
+    if np.linalg.norm(tangent) < 1e-12:
+        tangent = np.eye(3)[np.argmin(np.abs(north))]
+        tangent -= np.dot(tangent, north) * north
+    tangent /= np.linalg.norm(tangent)
+    inv_pole = np.dot(south, tangent) / (1 - cosine)
+    # One side tile covers about a four-fold change in stereographic radius.
+    bands = int(np.clip(np.ceil(-sum(np.log(radii)) / np.log(4)), 1, 32))
+    return np.r_[north, tangent, np.cross(north, tangent), inv_pole, radii], bands
+
+
 @dataclass
 class BSplinePatches:
-    """Poles in (+X,-X,+Y,-Y,+Z,-Z), u, v, xyz order on [0,1]².
+    """Poles in (patch, u, v, xyz) order on [0,1]².
 
-    Each axis has uniform simple interior knots and end multiplicity four.
+    Root face IDs follow (+X,-X,+Y,-Y,+Z,-Z) in chart coordinates.
+    Adaptive results store individual pole grids, knot breaks and rectangles
+    within these root faces. A legacy banded chart orders four sides per band
+    from south to north followed by the north and south caps.
+    Each axis has simple interior knots and end multiplicity four.
     Errors are measured at validation samples in model units. The seam-normal
     angle is in degrees. Metrics describe the poles at fitting time.
     """
 
-    poles: np.ndarray
+    poles: np.ndarray | tuple[np.ndarray, ...]
     max_error: float
     rms_error: float
     max_seam_angle_deg: float
+    # Unique, normalized knot breaks for each adaptive patch. End multiplicity is four.
+    breaks: list | None = None
+    domains: list | None = None  # (root face, [[u0,u1],[v0,v1]], assigned knot count)
+    frame: np.ndarray | None = None
+
+    def _breaks(self, index):
+        if self.breaks is not None:
+            return self.breaks[index]
+        return tuple(np.linspace(0, 1, n-2) for n in self.poles[index].shape[:2])
 
     def to_bsp(self):
-        """Return six bspmap.BSP surfaces using the optional bspmap package."""
+        """Return the bspmap.BSP surfaces using the optional bspmap package."""
         from bspmap import BSP
         from bspmap.basis import BasisClamped
 
-        n = self.poles.shape[1]
-        basis = (BasisClamped(n, 3), BasisClamped(n, 3))
-        return [
-            BSP(basis, 3, (n, n), patch.reshape(-1, 3).copy()) for patch in self.poles
-        ]
+        from bspmap import capi as bsp_capi
+
+        surfaces = []
+        for i, patch in enumerate(self.poles):
+            bases = []
+            for n, t in zip(patch.shape[:2], self._breaks(i)):
+                basis = BasisClamped(n, 3)
+                knots = np.r_[[0.]*3, t, [1.]*3]
+                if not np.array_equal(knots, basis.knots):
+                    basis.knots = knots
+                    basis.basis = bsp_capi.deboor_cox(knots, n, 3)
+                    basis.basis_d1 = bsp_capi.basis_derivative(basis.basis)
+                    basis.basis_d2 = bsp_capi.basis_derivative(basis.basis_d1)
+                bases.append(basis)
+            surfaces.append(BSP(bases, 3, patch.shape[:2], patch.reshape(-1, 3).copy()))
+        return surfaces
 
     def write_step(self, path):
         """Sew a single outward solid, write STEP in mm and check the imported topology.
@@ -68,20 +127,22 @@ class BSplinePatches:
         from OCP.TopExp import TopExp_Explorer
         from OCP.TopoDS import TopoDS
 
-        n = self.poles.shape[1]
-        spans = n - 3
-        knots = Array1_double(1, spans + 1)
-        mults = Array1_int(1, spans + 1)
-        for i in range(spans + 1):
-            knots.SetValue(i + 1, i / spans)
-            mults.SetValue(i + 1, 4 if i in (0, spans) else 1)
         sewing = BRepBuilderAPI_Sewing(1e-7)
-        for patch in self.poles:
-            points = Array2_gp_Pnt(1, n, 1, n)
+        for index, patch in enumerate(self.poles):
+            vectors, multiplicities = [], []
+            for t in self._breaks(index):
+                knots = Array1_double(1, len(t))
+                mults = Array1_int(1, len(t))
+                for i, value in enumerate(t, 1):
+                    knots.SetValue(i, value)
+                    mults.SetValue(i, 4 if i in (1, len(t)) else 1)
+                vectors.append(knots)
+                multiplicities.append(mults)
+            points = Array2_gp_Pnt(1, patch.shape[0], 1, patch.shape[1])
             for i, row in enumerate(patch, 1):
                 for j, xyz in enumerate(row, 1):
                     points.SetValue(i, j, gp_Pnt(*xyz))
-            surface = Geom_BSplineSurface(points, knots, knots, mults, mults, 3, 3)
+            surface = Geom_BSplineSurface(points, *vectors, *multiplicities, 3, 3)
             face = BRepBuilderAPI_MakeFace(surface, 1e-7)
             if not face.IsDone():
                 raise ValueError("Could not build a B-spline face")
@@ -137,8 +198,8 @@ class BSplinePatches:
             while faces.More():
                 count += 1
                 faces.Next()
-            if shells.More() or count != 6:
-                raise ValueError("STEP round-trip changed the six-face shell topology")
+            if shells.More() or count != len(self.poles):
+                raise ValueError("STEP round-trip changed the fitted shell topology")
             check = BOPAlgo_ArgumentAnalyzer()
             check.SetShape1(imported)
             check.SelfInterMode = True

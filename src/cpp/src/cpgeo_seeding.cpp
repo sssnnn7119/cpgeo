@@ -140,7 +140,8 @@ static std::vector<int> insert_delete_points(std::vector<double>& vertices_spher
             auto [a, b] = edge;
             neighbors[a].push_back(b);
             neighbors[b].push_back(a);
-            if (count != 2)
+            // New seeds are free controls. Leave edges between two anchors intact.
+            if (count != 2 || (a < fixed_count && b < fixed_count))
                 continue;
             const double* p = mapped.data() + 3 * a;
             const double* q = mapped.data() + 3 * b;
@@ -432,13 +433,24 @@ static std::tuple<bool, double, double> backtracking_line_search(
             }
         }
         
-        // Reject volume violations before evaluating the mapped edge lengths.
+        // Global volume barely changes when a few triangles fold. Keep every
+        // reference triangle on its original side during the Newton line search.
+        bool orientation_ok = true;
+        for (size_t i = 0; i < faces.size(); i += 3) {
+            const int a = 3 * faces[i], b = 3 * faces[i + 1], c = 3 * faces[i + 2];
+            const double *before = vertices_backup.data(), *after = vertices_sphere.data();
+            if (!(sphere_orientation(before + a, before + b, before + c)
+                  * sphere_orientation(after + a, after + b, after + c) > 0.0)) {
+                orientation_ok = false;
+                break;
+            }
+        }
         bool volume_ok = true;
         if (check_volume) {
             double current_volume = evaluate_volume(vertices_sphere, faces);
             volume_ok = std::abs(initial_volume - current_volume) / initial_volume < 0.05;
         }
-        if (volume_ok) {
+        if (orientation_ok && volume_ok) {
             double new_loss = compute_loss_only(vertices_sphere, tree, control_points, edges, north_pole);
             if (new_loss < current_loss) return {true, step_size, new_loss};
         }
@@ -685,7 +697,7 @@ std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
             r,
             3,
             faces,
-            10000
+            10000, vertices_sphere
         );
 
         // check for changes
