@@ -203,21 +203,36 @@ std::vector<XYZ> initialize(const Graph& graph, std::span<const int> faces) {
     return knots;
 }
 
-// Unsigned solid angles sum to 4*pi for a single covering of the sphere.
-bool covers_sphere(const std::vector<XYZ>& knots, std::span<const int> faces) {
+bool orient_sphere(std::vector<XYZ>& knots, std::span<int> faces) {
     double area = 0;
+    size_t inward = 0;
     for (size_t i = 0; i < faces.size(); i += 3) {
         const auto& a = knots[faces[i]];
         const auto& b = knots[faces[i + 1]];
         const auto& c = knots[faces[i + 2]];
         double det = cpgeo::sphere_orientation(a.data(), b.data(), c.data());
         if (!std::isfinite(det) || det == 0.0) return false;
+        inward += det < 0.0;
         double denominator = 1.0;
         for (int d = 0; d < 3; ++d)
             denominator += a[d] * b[d] + b[d] * c[d] + c[d] * a[d];
         area += 2.0 * std::atan2(std::abs(det), denominator);
     }
-    return std::abs(area - 4.0 * std::numbers::pi) < 1e-8;
+    // Only commit an orientation after verifying a single covering of the sphere.
+    if (!(std::abs(area - 4.0 * std::numbers::pi) < 1e-8)) return false;
+    if (inward == faces.size() / 3) {
+        // The chart reversed the entire mesh. Reflect the knots to preserve the
+        // physical face winding and the handedness of the surface derivatives.
+        for (auto& p : knots) p[0] = -p[0];
+    } else if (inward != 0) {
+        // Retain support for input meshes with inconsistent face winding.
+        for (size_t i = 0; i < faces.size(); i += 3) {
+            if (cpgeo::sphere_orientation(knots[faces[i]].data(), knots[faces[i + 1]].data(),
+                                          knots[faces[i + 2]].data()) < 0.0)
+                std::swap(faces[i + 1], faces[i + 2]);
+        }
+    }
+    return true;
 }
 
 } // namespace
@@ -229,14 +244,9 @@ extern "C" CPGEO_API int cpgeo_initialize_knots(int* faces, int num_faces, int n
         std::span<int> triangles(faces, 3 * static_cast<size_t>(num_faces));
         auto graph = mesh_graph(triangles, num_vertices);
         auto knots = initialize(graph, triangles);
-        if (knots.empty() || !covers_sphere(knots, triangles)) {
+        if (knots.empty() || !orient_sphere(knots, triangles)) {
             knots = polar_disk(graph, triangles);
-            if (!covers_sphere(knots, triangles)) return -2;
-        }
-        for (size_t i = 0; i < triangles.size(); i += 3) {
-            if (cpgeo::sphere_orientation(knots[faces[i]].data(), knots[faces[i + 1]].data(),
-                                          knots[faces[i + 2]].data()) < 0.0)
-                std::swap(faces[i + 1], faces[i + 2]);
+            if (!orient_sphere(knots, triangles)) return -2;
         }
         for (size_t i = 0; i < knots.size(); ++i)
             std::copy_n(knots[i].begin(), 3, out_knots + 3 * i);

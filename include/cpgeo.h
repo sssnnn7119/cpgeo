@@ -308,7 +308,8 @@ CPGEO_API void cpgeo_map_points_derivative2(
 );
 
 /** Initialize one unit-sphere knot per control vertex of a closed genus-zero mesh.
- * On success, out_knots contains 3*num_vertices doubles and faces are oriented outward.
+ * On success, out_knots contains 3*num_vertices doubles and faces point outward on
+ * the reference sphere. Consistently wound input faces keep their vertex order.
  * Returns -1 for invalid topology/input and -2 for numerical failure.
  */
 CPGEO_API int cpgeo_initialize_knots(int* faces, int num_faces, int num_vertices, double* out_knots);

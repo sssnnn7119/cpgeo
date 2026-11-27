@@ -1,4 +1,6 @@
 import numpy as np
+import pyvista as pv
+import pytest
 
 from cpgeo import CPGEO, capi
 
@@ -69,6 +71,19 @@ def test_refine_surface_matches_old_surface_samples():
     for alpha in (0.1, None):
         fixed_ids = fitted.refine_surface(0.4, 1, matching_alpha=alpha, fixed_control_indices=fixed_ids)
         assert fitted.control_points[fixed_ids].tobytes() == original.tobytes()
+
+
+@pytest.mark.parametrize("subdivisions, shift", [(0, 0), (1, 21)])
+def test_knot_initialization_preserves_consistent_face_winding(subdivisions, shift):
+    # Exercise both the polar fallback and a chart with its first face near the pole.
+    mesh = pv.Icosphere(nsub=subdivisions)
+    triangles = np.roll(mesh.faces.reshape(-1, 4)[:, 1:], shift, axis=0)
+    for winding in (triangles, triangles[:, ::-1]):
+        faces = winding.copy()
+        knots = capi.initialize_knots(faces, mesh.n_points)
+        np.testing.assert_array_equal(faces, winding)
+        a, b, c = knots[faces].transpose(1, 0, 2)
+        assert np.all(np.einsum("ij,ij->i", a, np.cross(b, c)) > 0)
 
 
 def test_coarse_spherical_knots_and_face_writeback():
