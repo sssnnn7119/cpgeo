@@ -182,6 +182,9 @@ _indices = np.ctypeslib.ndpointer(dtype=np.int64, ndim=1, flags="C_CONTIGUOUS")
 _faces = np.ctypeslib.ndpointer(dtype=np.int32, ndim=2, flags="C_CONTIGUOUS")
 _int_out = ctypes.POINTER(ctypes.c_int)
 _lib.cpgeo_initialize_knots.argtypes = [_faces, ctypes.c_int, ctypes.c_int, _xyz]
+_lib.cpgeo_fit_bspline_patches.argtypes = [
+    cpgeo_handle_t, _xyz, ctypes.c_int, ctypes.c_int, _xyz, _xyz,
+]
 _lib.cpgeo_fit_with_fixed_controls.argtypes = [
     cpgeo_handle_t, _xyz, ctypes.c_int, ctypes.c_double, _xyz, ctypes.c_int, _xyz,
 ]
@@ -845,6 +848,22 @@ def initialize_knots(faces, num_vertices):
     if triangles is not faces:
         faces[...] = triangles
     return knots
+
+
+def fit_bspline_patches(tree_handle, controls, spans):
+    """Fit one resolution of the six clamped cubic patches."""
+    if not isinstance(spans, (int, np.integer)) or not 1 <= spans <= 128:
+        raise ValueError("spans must be an integer between 1 and 128")
+    controls = _xyz_array(controls)
+    poles = np.empty((6, spans + 3, spans + 3, 3))
+    metrics = np.empty((1, 3))
+    status = _lib.cpgeo_fit_bspline_patches(tree_handle, controls, len(controls), spans,
+                                           poles.reshape(-1, 3), metrics)
+    if status == -1:
+        raise ValueError("Invalid control points or reference tree for spline fit")
+    if status:
+        raise RuntimeError("Spline fitting failed to converge or encountered a singular seam")
+    return poles, metrics[0]
 
 
 def fit_reconstructed_control_points(tree_handle, targets, alpha=0.1, fixed_points=None):

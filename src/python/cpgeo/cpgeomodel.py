@@ -210,6 +210,31 @@ class CPGEO:
         return self.map2(points_plane, derivative=derivative)
     
 
+    def fit_bspline_patches(self, tolerance: float = 0.01, *, max_spans: int = 64):
+        """Fit six bicubic patches to a sampled maximum position error in model units.
+
+        Double the number of uniform spans up to max_spans per axis. The result
+        includes the sampled errors and seam angle and can be written as STEP.
+        """
+        from .bspline import BSplinePatches
+
+        if not np.isfinite(tolerance) or tolerance <= 0:
+            raise ValueError("tolerance must be finite and positive")
+        if not isinstance(max_spans, (int, np.integer)) or not 1 <= max_spans <= 128:
+            raise ValueError("max_spans must be an integer between 1 and 128")
+        if self._space_tree is None:
+            self.initialize()
+        spans = min(4, max_spans)
+        while True:
+            poles, metrics = capi.fit_bspline_patches(self._space_tree, self.control_points, spans)
+            fit = BSplinePatches(poles, *metrics)
+            if fit.max_error <= tolerance:
+                return fit
+            if spans == max_spans:
+                raise ValueError(f"Sampled maximum error {fit.max_error:g} exceeds tolerance "
+                                 f"{tolerance:g} at {spans} spans per axis")
+            spans = min(2 * spans, max_spans)
+
     def uniformly_mesh(self, init_vertices: np.ndarray = None, seed_size: float = 1.0,
                        max_iterations: int = 10, *, fixed_count: int = 0):
         """

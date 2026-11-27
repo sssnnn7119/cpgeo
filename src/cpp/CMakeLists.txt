@@ -7,6 +7,7 @@ add_library(cpgeo SHARED
     src/triangulation.cpp
     src/sphere_triangulation.cpp
     src/cpgeo_mapping.cpp
+    src/bspline_patches.cpp
     src/knot_initialization.cpp
     src/reconstruction_fit.cpp
     src/cpgeo_seeding.cpp

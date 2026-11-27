@@ -314,6 +314,16 @@ CPGEO_API void cpgeo_map_points_derivative2(
  */
 CPGEO_API int cpgeo_initialize_knots(int* faces, int num_faces, int num_vertices, double* out_knots);
 
+/** Fit six clamped bicubic patches to a CPGEO surface on the cubed sphere.
+ * spans is the number of equal knot intervals on each axis (1..128).
+ * Supply out_poles[6][spans+3][spans+3][3] in (face,u,v,xyz) order.
+ * out_metrics receives sampled maximum and RMS position errors and maximum
+ * seam-normal angle in degrees. Returns 0 on success, -1 for invalid input,
+ * or -2 for a numerical failure or a singular seam.
+ */
+CPGEO_API int cpgeo_fit_bspline_patches(cpgeo_handle_t tree, const double* controls,
+    int count, int spans, double* out_poles, double* out_metrics);
+
 /**
  * Fit physical control points at the knots of the reconstructed reference tree.
  * targets and out_points each hold num_points XYZ triples in new knot order.
