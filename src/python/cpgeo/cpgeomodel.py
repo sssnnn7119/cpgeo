@@ -248,7 +248,9 @@ class CPGEO:
         Args:
             init_vertices (np.ndarray, optional): Initial sphere vertices (N,3). If None, uses current knots as starting vertices.
             seed_size (float): Desired seed size for remeshing.
-            max_iterations (int): Maximum number of uniforming iterations.
+            max_iterations (int): Zero stops after inserting and deleting seeds. A positive
+                budget runs one overlapping-patch smoothing sweep, then up to this many
+                edge-flip passes.
             fixed_count (int): Preserve this many leading seeds throughout remeshing.
 
         Returns:

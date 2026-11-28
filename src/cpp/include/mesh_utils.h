@@ -13,9 +13,12 @@ namespace cpgeo {
 
 // Signed volume of the tetrahedron formed by a spherical triangle and the origin.
 inline double sphere_orientation(const double* a, const double* b, const double* c) {
-    return a[0] * (b[1]*c[2] - b[2]*c[1])
-         + a[1] * (b[2]*c[0] - b[0]*c[2])
-         + a[2] * (b[0]*c[1] - b[1]*c[0]);
+    // Short edges preserve the sign of tiny faces far from the coordinate origin.
+    const double bx = b[0] - a[0], by = b[1] - a[1], bz = b[2] - a[2];
+    const double cx = c[0] - a[0], cy = c[1] - a[1], cz = c[2] - a[2];
+    return a[0] * (by * cz - bz * cy)
+         + a[1] * (bz * cx - bx * cz)
+         + a[2] * (bx * cy - by * cx);
 }
 
 // Hash function for an edge represented as a pair of vertex indices

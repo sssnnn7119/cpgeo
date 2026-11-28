@@ -51,8 +51,19 @@ bool DelaunayTriangulation::isInCircumcircle(const Triangle& tri, int point_idx)
     auto [x1, y1] = getNode(tri[1]);
     auto [x2, y2] = getNode(tri[2]);
     
-    // Triangles are counter-clockwise. Evaluate the in-circle determinant
-    // relative to the inserted point so tiny triangles retain their scale.
+    // The in-circle determinant is translation invariant. If the query is far
+    // from a tight cluster, use a triangle corner as origin so the two short
+    // edge vectors enter the determinant directly. Swapping two rows reverses
+    // its sign; the original triangle is counterclockwise.
+    const double dx = x - x0, dy = y - y0;
+    const double bx0 = x1 - x0, by0 = y1 - y0;
+    const double cx0 = x2 - x0, cy0 = y2 - y0;
+    const bool swap_origin = dx * dx + dy * dy >
+        4 * (bx0 * bx0 + by0 * by0 + cx0 * cx0 + cy0 * cy0);
+    if (swap_origin) {
+        std::swap(x, x0);
+        std::swap(y, y0);
+    }
     const long double px = x, py = y;
     const long double ax = x0 - px, ay = y0 - py;
     const long double bx = x1 - px, by = y1 - py;
@@ -60,7 +71,7 @@ bool DelaunayTriangulation::isInCircumcircle(const Triangle& tri, int point_idx)
     const long double det = (ax * ax + ay * ay) * (bx * cy - by * cx)
                           + (bx * bx + by * by) * (cx * ay - cy * ax)
                           + (cx * cx + cy * cy) * (ax * by - ay * bx);
-    return det > 0;
+    return swap_origin ? det < 0 : det > 0;
 }
 
 void DelaunayTriangulation::bowyerWatsonStep(int node_idx) {

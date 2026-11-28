@@ -632,7 +632,7 @@ std::array<std::vector<double>, 3> map_points_batch_derivative2(
 
 
     // for each query, compute weights and mapped points
-#pragma omp parallel for
+#pragma omp parallel for if(num_queries >= 512)
     for (int i = 0; i < num_queries; ++i) {
         auto indices_cps = tree.query_point(query_point[3 * i], query_point[3 * i + 1], query_point[3 * i + 2]);
 		int num_indices = static_cast<int>(indices_cps.size());

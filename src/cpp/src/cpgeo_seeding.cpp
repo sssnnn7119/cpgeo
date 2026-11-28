@@ -32,35 +32,14 @@ namespace cpgeo {
     
     }
 
-static double triangleArea(
-    std::span<const double, 3> v0,
-    std::span<const double, 3> v1,
-    std::span<const double, 3> v2
-){
-    std::array<double, 3> a{
-        v1[0] - v0[0],
-        v1[1] - v0[1],
-        v1[2] - v0[2]
-    };
-    std::array<double, 3> b{
-        v2[0] - v0[0],
-        v2[1] - v0[1],
-        v2[2] - v0[2]
-    };
-
-    std::array<double, 3> cross_product{
-        a[1]*b[2] - a[2]*b[1],
-        a[2]*b[0] - a[0]*b[2],
-        a[0]*b[1] - a[1]*b[0]
-    };
-
-    double area = 0.5 * std::sqrt(
-        cross_product[0]*cross_product[0] +
-        cross_product[1]*cross_product[1] +
-        cross_product[2]*cross_product[2]
-    );
-
-    return area;
+// Twice the oriented area of a triangle on the mapped physical surface.
+static std::array<double, 3> face_normal(std::span<const double> points, const int* face) {
+    const double* a = points.data() + 3*face[0];
+    const double* b = points.data() + 3*face[1];
+    const double* c = points.data() + 3*face[2];
+    return {(b[1]-a[1])*(c[2]-a[2]) - (b[2]-a[2])*(c[1]-a[1]),
+            (b[2]-a[2])*(c[0]-a[0]) - (b[0]-a[0])*(c[2]-a[2]),
+            (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0])};
 }
 
 static bool can_collapse(int a, int b, const std::array<double, 3>& midpoint,
@@ -251,7 +230,7 @@ struct SmoothingSystem {
 static SmoothingSystem assemble_uv_system(
     std::span<const double> r, std::span<const double> jacobian,
     std::span<const double> second_derivative, std::span<const int> edges,
-    std::span<const int> active_index, int active_count)
+    int active_count)
 {
     auto [loss, spatial_gradient, indices, values] = closure_edge_length_derivative2(r, 3, edges, order);
     SmoothingSystem system;
@@ -259,17 +238,18 @@ static SmoothingSystem assemble_uv_system(
     using Block = std::array<double, 4>;
     using BlockKey = std::pair<int, int>;
     using BlockMap = std::unordered_map<BlockKey, Block, EdgeHash>;
-    std::vector<BlockMap> thread_blocks(omp_get_max_threads());
+    const int threads = std::min(omp_get_max_threads(), std::max(1, active_count / 128));
+    std::vector<BlockMap> thread_blocks(threads);
 
-    #pragma omp parallel
+    #pragma omp parallel if(threads > 1) num_threads(threads)
     {
         auto& blocks = thread_blocks[omp_get_thread_num()];
         // Each pair of active vertices contributes one 2x2 UV block, J_i^T H_ij J_j.
         #pragma omp for schedule(static) nowait
         for (int k = 0; k < static_cast<int>(values.size()); ++k) {
             int i = indices[4 * k], j = indices[4 * k + 2];
-            if (active_index[i] < 0 || active_index[j] < 0) continue;
-            auto& block = blocks[{active_index[i], active_index[j]}];
+            if (i >= active_count || j >= active_count) continue;
+            auto& block = blocks[{i, j}];
             const double* ji = jacobian.data() + 6 * i + indices[4 * k + 1];
             const double* jj = jacobian.data() + 6 * j + indices[4 * k + 3];
             for (int u = 0; u < 2; ++u) {
@@ -280,14 +260,12 @@ static SmoothingSystem assemble_uv_system(
         }
 
         #pragma omp for
-        for (int i = 0; i < static_cast<int>(active_index.size()); ++i) {
-            int row = active_index[i];
-            if (row < 0) continue;
-            auto& diagonal = blocks[{row, row}];
+        for (int i = 0; i < active_count; ++i) {
+            auto& diagonal = blocks[{i, i}];
             for (int d = 0; d < 3; ++d) {
                 double g = spatial_gradient[3 * i + d];
                 for (int u = 0; u < 2; ++u) {
-                    system.gradient[2 * row + u] += g * jacobian[6 * i + 3 * u + d];
+                    system.gradient[2 * i + u] += g * jacobian[6 * i + 3 * u + d];
                     for (int v = 0; v < 2; ++v) {
                         int entry = 2 * u + v;
                         diagonal[entry] += g * second_derivative[12 * i + 3 * entry + d];
@@ -332,236 +310,202 @@ static SmoothingSystem assemble_uv_system(
     return system;
 }
 
-// Compute loss only (without derivatives)
-static double compute_loss_only(
-    std::vector<double>& vertices_sphere,
-    SpaceTree& tree,
-    const std::span<const double> control_points,
-    std::span<const int> edges,
-    bool north_pole
-) {
-    auto r = map_points_batch(vertices_sphere, tree, control_points, north_pole);
-    double loss = closure_edge_length_derivative0(std::span<double>(r.data(), r.size()), 3, edges, order);
-    return loss;
-}
-
-// Evaluate volume of the mesh
-static double evaluate_volume(
-    std::span<const double> vertices_sphere,
-    std::span<const int> faces){
-    
-    double volume = 0.0;
-    int num_faces = static_cast<int>(faces.size()) / 3;
-    for (int fidx = 0; fidx < num_faces; fidx++) {
-        int v0_idx = faces[fidx * 3 + 0];
-        int v1_idx = faces[fidx * 3 + 1];
-        int v2_idx = faces[fidx * 3 + 2];
-
-        std::span<const double, 3> v0(vertices_sphere.data() + v0_idx * 3, 3);
-        std::span<const double, 3> v1(vertices_sphere.data() + v1_idx * 3, 3);
-        std::span<const double, 3> v2(vertices_sphere.data() + v2_idx * 3, 3);
-
-        // Volume contribution from tetrahedron formed by triangle and origin
-        double vol = (v0[0] * (v1[1] * v2[2] - v1[2] * v2[1]) -
-                      v0[1] * (v1[0] * v2[2] - v1[2] * v2[0]) +
-                      v0[2] * (v1[0] * v2[1] - v1[1] * v2[0])) / 6.0;
-        volume += vol;
+// Partition the six cube charts by rank. Two successive median cuts (u, v)
+// form four children. Stop as soon as a child fits the free-point budget.
+static std::vector<std::vector<int>> smoothing_cores(std::span<const double> vertices, int fixed_count) {
+    constexpr int target = 64;
+    std::array<std::vector<int>, 6> roots;
+    for (int i = fixed_count; i < static_cast<int>(vertices.size() / 3); ++i) {
+        const double* p = vertices.data() + 3*i;
+        int axis = 0;
+        for (int d = 1; d < 3; ++d)
+            if (std::abs(p[d]) > std::abs(p[axis])) axis = d;
+        roots[2*axis + (p[axis] < 0)].push_back(i);
     }
-    return std::abs(volume);
-}
-
-// Backtracking line search with volume preservation
-// Returns: (step_accepted, final_step_size, final_loss)
-static std::tuple<bool, double, double> backtracking_line_search(
-    std::vector<double>& vertices_sphere,
-    const std::vector<double>& vertices_backup,
-    const std::vector<double>& delta_uv,
-    double current_loss,
-    double initial_volume,
-    std::span<int> faces,
-    SpaceTree& tree,
-    const std::span<const double> control_points,
-    std::span<const int> edges,
-    bool north_pole,
-    int fixed_count,
-    int max_backtracks = 30,
-    double beta = 0.5,
-    bool check_volume = true
-) {
-    int num_points = static_cast<int>(vertices_sphere.size()) / 3;
-    double step_size = 1.0;
-    
-    for (int bt = 0; bt < max_backtracks; bt++) {
-        // Apply update: convert delta_uv to sphere coordinates
-        vertices_sphere = vertices_backup; // restore
-        
-        for (int ptidx = fixed_count; ptidx < num_points; ptidx++) {
-            // Get current sphere position
-            std::array<double, 3> sphere_pos = {
-                vertices_sphere[ptidx * 3 + 0],
-                vertices_sphere[ptidx * 3 + 1],
-                vertices_sphere[ptidx * 3 + 2]
+    std::vector<std::vector<int>> cores;
+    for (int face = 0; face < 6; ++face) {
+        auto split = [&](auto&& self, std::span<int> ids, int direction) -> void {
+            if (ids.empty()) return;
+            if (ids.size() <= target) {
+                cores.emplace_back(ids.begin(), ids.end());
+                return;
+            }
+            int normal = face / 2, axis = (normal + direction + 1) % 3;
+            auto coordinate = [&](int id) {
+                return vertices[3*id+axis] / std::abs(vertices[3*id+normal]);
             };
-            
-            // Project to plane
-            auto uv_pos = stereographicProjection3_2(
-                std::span<const double, 3>(sphere_pos.data(), 3),
-                north_pole
-            );
-            
-            // Apply step in UV space
-            uv_pos[0] += step_size * delta_uv[ptidx * 2 + 0];
-            uv_pos[1] += step_size * delta_uv[ptidx * 2 + 1];
-            
-            // Project back to sphere
-            auto new_sphere_pos = stereographicProjection2_3(
-                std::span<const double, 2>(uv_pos.data(), 2),
-                north_pole
-            );
-            
-            // Normalize to unit sphere
-            double norm = std::sqrt(
-                new_sphere_pos[0] * new_sphere_pos[0] +
-                new_sphere_pos[1] * new_sphere_pos[1] +
-                new_sphere_pos[2] * new_sphere_pos[2]
-            );
-            
-            if (norm > 1e-10) {
-                vertices_sphere[ptidx * 3 + 0] = new_sphere_pos[0] / norm;
-                vertices_sphere[ptidx * 3 + 1] = new_sphere_pos[1] / norm;
-                vertices_sphere[ptidx * 3 + 2] = new_sphere_pos[2] / norm;
-            }
-        }
-        
-        // Global volume barely changes when a few triangles fold. Keep every
-        // reference triangle on its original side during the Newton line search.
-        bool orientation_ok = true;
-        for (size_t i = 0; i < faces.size(); i += 3) {
-            const int a = 3 * faces[i], b = 3 * faces[i + 1], c = 3 * faces[i + 2];
-            const double *before = vertices_backup.data(), *after = vertices_sphere.data();
-            if (!(sphere_orientation(before + a, before + b, before + c)
-                  * sphere_orientation(after + a, after + b, after + c) > 0.0)) {
-                orientation_ok = false;
-                break;
-            }
-        }
-        bool volume_ok = true;
-        if (check_volume) {
-            double current_volume = evaluate_volume(vertices_sphere, faces);
-            volume_ok = std::abs(initial_volume - current_volume) / initial_volume < 0.05;
-        }
-        if (orientation_ok && volume_ok) {
-            double new_loss = compute_loss_only(vertices_sphere, tree, control_points, edges, north_pole);
-            if (new_loss < current_loss) return {true, step_size, new_loss};
-        }
-
-        // Reduce step size
-        step_size *= beta;
+            size_t half = ids.size() / 2;
+            std::nth_element(ids.begin(), ids.begin()+half, ids.end(), [&](int a, int b) {
+                return std::pair{coordinate(a), a} < std::pair{coordinate(b), b};
+            });
+            self(self, ids.first(half), 1-direction);
+            self(self, ids.subspan(half), 1-direction);
+        };
+        split(split, roots[face], 0);
     }
-    
-    return {false, 0.0, current_loss};
+    return cores;
 }
 
-static std::vector<double> newton_step(
-    std::vector<double>& vertices_sphere, 
-    SpaceTree& tree, 
-    std::span<const double> control_points, 
-    std::span<const int> edges, 
-    bool north_pole, int fixed_count
-){
+struct SmoothingPatch {
+    std::vector<int> ids, edges, faces, face_ids;
+    int active_count;
+};
 
-    auto [r, rdu, rdu2] = map_points_batch_derivative2(vertices_sphere, tree, control_points, north_pole);
-    const int num_points = static_cast<int>(vertices_sphere.size() / 3);
-    std::vector<int> active_index(num_points, -1);
-    int active_count = 0;
-    for (int i = fixed_count; i < num_points; ++i) {
-        double z = vertices_sphere[3 * i + 2];
-        if (north_pole ? z < 0.7 : z > -0.7) active_index[i] = active_count++;
+// Movable vertices come first. All triangles and springs incident on them
+// belong to the local problem, including springs anchored across the boundary.
+static SmoothingPatch make_patch(const std::vector<int>& core, int fixed_count,
+                                 const std::vector<std::vector<int>>& neighbors,
+                                 const std::vector<std::vector<int>>& incident,
+                                 std::span<const int> triangles, std::vector<int>& index) {
+    SmoothingPatch patch;
+    auto add = [&](int v) {
+        if (index[v] < 0) {
+            index[v] = static_cast<int>(patch.ids.size());
+            patch.ids.push_back(v);
+        }
+    };
+    for (int v : core) add(v);
+    size_t begin = 0;
+    for (int ring = 0; ring < 2; ++ring) {
+        const size_t end = patch.ids.size();
+        for (size_t i = begin; i < end; ++i)
+            for (int v : neighbors[patch.ids[i]])
+                if (v >= fixed_count) add(v);
+        begin = end;
     }
-    auto [gradient, csr_row_ptr, csr_col_idx, csr_values] =
-        assemble_uv_system(r, rdu, rdu2, edges, active_index, active_count);
+    patch.active_count = static_cast<int>(patch.ids.size());
+    for (int i = 0; i < patch.active_count; ++i) {
+        int v = patch.ids[i];
+        for (int w : neighbors[v]) {
+            add(w);
+            if (index[w] > i)
+                patch.edges.insert(patch.edges.end(), {i, index[w]});
+        }
+    }
+    for (int i = 0; i < patch.active_count; ++i) {
+        for (int f : incident[patch.ids[i]]) {
+            int a = index[triangles[3*f]], b = index[triangles[3*f+1]], c = index[triangles[3*f+2]];
+            if (std::min({a,b,c}) == i) {
+                patch.faces.insert(patch.faces.end(), {a,b,c});
+                patch.face_ids.push_back(f);
+            }
+        }
+    }
+    for (int v : patch.ids) index[v] = -1;
+    return patch;
+}
 
-    const int num_keep_variables = 2 * active_count;
-    std::vector<double> rhs(num_keep_variables);
-    for (int i = 0; i < num_keep_variables; ++i) rhs[i] = -gradient[i];
+static std::vector<double> newton_direction(SmoothingSystem system) {
+    const int n = static_cast<int>(system.gradient.size());
+    std::vector<double> scale(n, 1.0), rhs(n);
+    for (int i = 0; i < n; ++i) {
+        for (int k = system.row_offsets[i]; k < system.row_offsets[i+1]; ++k) {
+            if (system.columns[k] == i && system.values[k] != 0.0)
+                scale[i] = 1.0 / std::sqrt(std::abs(system.values[k]));
+        }
+        rhs[i] = -system.gradient[i] * scale[i];
+    }
+    for (int i = 0; i < n; ++i)
+        for (int k = system.row_offsets[i]; k < system.row_offsets[i+1]; ++k)
+            system.values[k] *= scale[i] * scale[system.columns[k]];
 
-    // Diagonal Preconditioning (Symmetric Scaling: Jacobi Preconditioner approach)
-    // Transform A x = b  ->  (S A S) (S^-1 x) = S b, where S = D^-1/2
-    // Let A' = S A S, x' = S^-1 x, b' = S b.  Solve A' x' = b'. Recover x = S x'.
-    std::vector<double> diag_scaling(num_keep_variables, 1.0);
-    bool use_preconditioning = true;
+    std::vector<double> step;
+    conjugate_gradient(system.row_offsets, system.columns, system.values, rhs, step, 10000, 1e-6);
+    double slope = 0.0;
+    for (int i = 0; i < n; ++i) {
+        step[i] *= scale[i];
+        if (!std::isfinite(step[i])) return {};
+        slope += step[i] * system.gradient[i];
+    }
+    if (!std::isfinite(slope) || slope == 0.0) return {};
+    if (slope > 0.0)
+        for (double& value : step) value = -value;
+    return step;
+}
 
-    for (int i = 0; i < num_keep_variables; ++i) {
-        double diag_val = 0.0;
-        // Find diagonal element A_ii
-        for (int k = csr_row_ptr[i]; k < csr_row_ptr[i+1]; ++k) {
-            if (csr_col_idx[k] == i) {
-                diag_val = csr_values[k];
+static double face_determinant(std::span<const double> vertices, const int* tri) {
+    return sphere_orientation(vertices.data()+3*tri[0], vertices.data()+3*tri[1], vertices.data()+3*tri[2]);
+}
+
+static bool smooth_patch(const SmoothingPatch& patch, std::vector<double>& vertices,
+                         SpaceTree& tree, std::span<const double> controls,
+                         std::span<const std::array<double, 3>> normals,
+                         double initial_volume6, double& volume6) {
+    const int n = patch.active_count;
+    std::vector<double> local(3*patch.ids.size());
+    for (size_t i = 0; i < patch.ids.size(); ++i)
+        std::copy_n(vertices.data()+3*patch.ids[i], 3, local.data()+3*i);
+
+    // Use the stereographic pole farther from each movable vertex. The UV
+    // derivatives and the trial update of that vertex use the same chart.
+    std::vector<double> jacobian(6*n), hessian(12*n);
+    std::vector<std::array<double,2>> uv(n);
+    for (bool north : {false, true}) {
+        std::vector<int> rows;
+        std::vector<double> points;
+        for (int i = 0; i < n; ++i) {
+            if ((local[3*i+2] < 0) != north) continue;
+            rows.push_back(i);
+            points.insert(points.end(), local.data()+3*i, local.data()+3*i+3);
+            uv[i] = stereographicProjection3_2(std::span<const double,3>(local.data()+3*i, 3), north);
+        }
+        if (rows.empty()) continue;
+        auto [r, du, d2u] = map_points_batch_derivative2(points, tree, controls, north);
+        for (size_t j = 0; j < rows.size(); ++j) {
+            std::copy_n(du.data()+6*j, 6, jacobian.data()+6*rows[j]);
+            std::copy_n(d2u.data()+12*j, 12, hessian.data()+12*rows[j]);
+        }
+    }
+    auto mapped = map_points_batch(local, tree, controls);
+    auto step = newton_direction(assemble_uv_system(mapped, jacobian, hessian, patch.edges, n));
+    if (step.empty()) return false;
+    const double loss = closure_edge_length_derivative0(mapped, 3, patch.edges, order);
+    std::vector<double> before(patch.faces.size()/3);
+    for (size_t f = 0; f < before.size(); ++f) {
+        const int* face = patch.faces.data()+3*f;
+        before[f] = face_determinant(local, face);
+    }
+
+    auto trial = local;
+    double alpha = 1.0;
+    for (int bt = 0; bt < 30; ++bt, alpha *= 0.5) {
+        for (int i = 0; i < n; ++i) {
+            std::array<double,2> q{uv[i][0]+alpha*step[2*i], uv[i][1]+alpha*step[2*i+1]};
+            auto p = stereographicProjection2_3(q, local[3*i+2] < 0);
+            std::copy(p.begin(), p.end(), trial.begin()+3*i);
+        }
+        double change = 0.0;
+        bool oriented = true;
+        for (size_t f = 0; f < before.size(); ++f) {
+            double after = face_determinant(trial, patch.faces.data()+3*f);
+            if (!(before[f]*after > 0.0)) {
+                oriented = false;
+                break;
+            }
+            change += after - before[f];
+        }
+        const double next_volume6 = volume6 + change;
+        if (!oriented || !(std::abs(next_volume6 - initial_volume6) < .05*std::abs(initial_volume6)))
+            continue;
+        auto moved = map_points_batch(std::span<const double>(trial).first(3*n), tree, controls);
+        std::copy(moved.begin(), moved.end(), mapped.begin());
+        // A triangle with consistent spherical winding can still fold in physical space.
+        for (size_t f = 0; f < patch.face_ids.size(); ++f) {
+            const auto next = face_normal(mapped, patch.faces.data()+3*f);
+            const auto& old = normals[patch.face_ids[f]];
+            if (!(old[0]*next[0] + old[1]*next[1] + old[2]*next[2] > 0.0)) {
+                oriented = false;
                 break;
             }
         }
-        
-        // If diagonal is non-positive, preconditioning is invalid for this matrix structure
-        diag_scaling[i] = 1.0 / std::sqrt(std::abs(diag_val));
-    }
-
-    if (use_preconditioning) {
-        // Apply scaling to Matrix A
-        #pragma omp parallel for
-        for (int i = 0; i < num_keep_variables; ++i) {
-            for (int k = csr_row_ptr[i]; k < csr_row_ptr[i+1]; ++k) {
-                int col = csr_col_idx[k];
-                csr_values[k] *= diag_scaling[i] * diag_scaling[col];
-            }
-        }
-
-        // Apply scaling to RHS b
-        for (int i = 0; i < num_keep_variables; ++i) {
-            rhs[i] *= diag_scaling[i];
+        if (oriented && closure_edge_length_derivative0(mapped, 3, patch.edges, order) < loss) {
+            for (int i = 0; i < n; ++i)
+                std::copy_n(trial.data()+3*i, 3, vertices.data()+3*patch.ids[i]);
+            volume6 = next_volume6;
+            return true;
         }
     }
-
-    // Solve Hessian * delta_uv = -gradient using conjugate gradient
-    std::vector<double> delta_uv_filtered;
-    bool converged = conjugate_gradient(csr_row_ptr, csr_col_idx, csr_values, rhs, delta_uv_filtered, 10000, 1e-6);
-
-    if (use_preconditioning) {
-        // Recover original variables: x = S * x'
-        for (int i = 0; i < num_keep_variables; ++i) {
-            delta_uv_filtered[i] *= diag_scaling[i];
-        }
-    }
-
-    
-    
-    // if (!converged) {
-    //     std::cout << "    Warning: CG did not converge, using gradient descent step" << std::endl;
-    //     // Fallback to gradient descent
-    //     delta_uv_filtered = rhs;
-    //     double scale = 0.01; // small step size
-    //     for (auto& v : delta_uv_filtered) v *= scale;
-    // }
-    
-    // Inactive points have zero displacement.
-    std::vector<double> delta_uv(2 * num_points, 0.0);
-    double dot_grad = 0.0;
-    for (int i = 0; i < num_points; ++i) {
-        if (active_index[i] < 0) continue;
-        for (int dim = 0; dim < 2; ++dim) {
-            int idx = 2 * active_index[i] + dim;
-            double step = delta_uv_filtered[idx];
-            if (!std::isfinite(step)) step = 0.0;
-            delta_uv[2 * i + dim] = step;
-            dot_grad += step * gradient[idx];
-        }
-    }
-    if (dot_grad > 0.0) {
-        for (auto& v : delta_uv) {
-            v = -v;
-        }
-    }
-    
-    return delta_uv;
+    return false;
 }
 
 void vertice_smoothing(std::vector<double>& vertices_sphere, std::span<int> faces,
@@ -569,98 +513,37 @@ void vertice_smoothing(std::vector<double>& vertices_sphere, std::span<int> face
     vertice_smoothing(vertices_sphere, faces, control_points, tree, 0);
 }
 
-void vertice_smoothing(
-    std::vector<double>& vertices_sphere,
-    std::span<int> faces,
-    std::span<const double> control_points,
-    SpaceTree& tree, int fixed_count
-){
-    auto edges_map = extractEdgesWithNumber(faces);
-
-    std::vector<int> edges;
-    edges.reserve(edges_map.size() * 2);
-    for (const auto& [edge, count] : edges_map) {
-        edges.push_back(edge.first);
-        edges.push_back(edge.second);
+void vertice_smoothing(std::vector<double>& vertices, std::span<int> faces,
+                       std::span<const double> controls, SpaceTree& tree, int fixed_count) {
+    const auto cores = smoothing_cores(vertices, fixed_count);
+    if (cores.empty()) return;
+    std::vector<std::vector<int>> neighbors(vertices.size()/3), incident(vertices.size()/3);
+    for (const auto& [edge, count] : extractEdgesWithNumber(faces)) {
+        auto [a,b] = edge;
+        neighbors[a].push_back(b);
+        neighbors[b].push_back(a);
     }
-
-    const int max_newton_iters = 500;
-    const double loss_tol = 1e-6;
-    const double grad_tol = 1e-1;
-    
-    double prev_loss = std::numeric_limits<double>::infinity();
-
-    // Initial volume
-    double initial_volume = evaluate_volume(std::span<const double>(vertices_sphere.data(), vertices_sphere.size()), faces);
-    
-    bool north_converged = false;
-    bool south_converged = false;
-
-    for(int loop = 0; loop < max_newton_iters; loop++){
-        bool north_pole = loop % 2 == 0;
-
-        if (north_converged && south_converged) {
-            std::cout << "  - Both pole regions converged, stopping." << std::endl;
-            break;
-        }
-        if(north_pole && north_converged){
-            std::cout << "  - North pole region already converged, skipping." << std::endl;
-            continue;
-        }
-        if(!north_pole && south_converged){
-            std::cout << "  - South pole region already converged, skipping." << std::endl;
-            continue;
-        }
-        
-        // Compute newton step (returns delta in UV space)
-        auto delta_uv = newton_step(vertices_sphere, tree, control_points, std::span<const int>(edges.data(), edges.size()), north_pole, fixed_count);
-
-
-        
-        // Compute current loss
-        double current_loss = compute_loss_only(vertices_sphere, tree, control_points, std::span<const int>(edges.data(), edges.size()), north_pole);
-        
-        std::cout << "    Newton iter " << loop << ": loss = " << current_loss;
-        
-        // Check gradient norm for convergence
-        double grad_norm = 0.0;
-        for (double v : delta_uv) {
-            grad_norm += v * v;
-        }
-        grad_norm = std::sqrt(grad_norm);
-        std::cout << ", grad_norm = " << grad_norm;
-        
-        if (grad_norm < grad_tol) {
-            std::cout << " -> Converged (small gradient)" << std::endl;
-            if (north_pole) north_converged = true;
-            else south_converged = true;
-            continue;
-        }
-        
-        // Backtracking line search
-        const double beta = 0.5;  // step size reduction factor
-        const int max_backtracks = 30;
-        
-        std::vector<double> vertices_backup = vertices_sphere;
-        
-        auto [step_accepted, step_size, new_loss] = backtracking_line_search(
-            vertices_sphere, vertices_backup, delta_uv, current_loss, initial_volume,
-            faces, tree, control_points, std::span<const int>(edges.data(), edges.size()),
-            north_pole, fixed_count, max_backtracks, beta, true
-        );
-        
-        if (step_accepted) {
-            std::cout << " -> step_size = " << step_size << ", new_loss = " << new_loss << std::endl;
-            prev_loss = new_loss;
-        } else {
-            std::cout << " -> Line search failed, no step taken." << std::endl;
-            vertices_sphere = vertices_backup;
-            break; // No progress possible
-        }
+    // A face contribution is six times its signed tetrahedral volume.
+    const auto mapped = map_points_batch(vertices, tree, controls);
+    // Overlapping patches can move a seed several times. Use one physical
+    // reference normal per face for the whole sweep.
+    std::vector<std::array<double, 3>> normals(faces.size()/3);
+    double volume6 = 0.0;
+    for (size_t i = 0; i < faces.size(); i += 3) {
+        for (int d = 0; d < 3; ++d) incident[faces[i+d]].push_back(static_cast<int>(i/3));
+        normals[i/3] = face_normal(mapped, faces.data()+i);
+        volume6 += face_determinant(vertices, faces.data()+i);
     }
+    const double initial_volume6 = volume6;
+    std::vector<int> index(vertices.size()/3, -1);
+    size_t accepted = 0;
+    for (const auto& core : cores) {
+        auto patch = make_patch(core, fixed_count, neighbors, incident, faces, index);
+        if (smooth_patch(patch, vertices, tree, controls, normals, initial_volume6, volume6))
+            ++accepted;
+    }
+    std::cout << "  - Smoothing sweep: " << accepted << "/" << cores.size() << " patches accepted.\n";
 }
-
-
 
 std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
     std::span<double> init_vertices_sphere, std::span<const double> control_points,
@@ -683,38 +566,17 @@ std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
     // insert/delete points
     auto faces = insert_delete_points(vertices_sphere, control_points, tree, seed_size, fixed_count);
 
-    std::vector<double> r;
-
-    for(int loop=0;loop<max_iterations;loop++){
-        std::cout << "  - Mesh uniforming loop " << loop + 1 << "/" << max_iterations << std::endl;
-
-        // refine mesh by vertex smoothing
+    if (max_iterations > 0) {
         vertice_smoothing(vertices_sphere, faces, control_points, tree, fixed_count);
-
-        // refine mesh by edge flipping
-        r = map_points_batch(vertices_sphere, tree, control_points);
-        auto faces_new = mesh_optimize_by_edge_flipping(
-            r,
-            3,
-            faces,
-            10000, vertices_sphere
-        );
-
-        // check for changes
-        bool any_change = false;
-        for (int i = 0; i < static_cast<int>(faces.size()); i++) {
-            if (faces[i] != faces_new[i]) {
-                any_change = true;
-                break;
-            }
+        const auto mapped = map_points_batch(vertices_sphere, tree, control_points);
+        // A positive iteration budget requests one smoothing sweep. Any
+        // remaining iterations can settle connectivity without moving seeds.
+        for (int i = 0; i < max_iterations; ++i) {
+            auto next = mesh_optimize_by_edge_flipping(mapped, 3, faces, 10000, vertices_sphere);
+            if (next == faces) break;
+            faces = std::move(next);
         }
-        if (!any_change) {
-            std::cout << "    No edge flipping changes, stopping early." << std::endl;
-            break;
-        }
-        faces = std::move(faces_new);
     }
-
     return {vertices_sphere, faces};
 }
 

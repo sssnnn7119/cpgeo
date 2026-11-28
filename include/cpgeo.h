@@ -370,7 +370,7 @@ CPGEO_API int cpgeo_fit_with_fixed_controls(
  *   - num_control_points: number of control points
  *   - tree: SpaceTree handle
  *   - seed_size: desired seed size for remeshing
- *   - max_iterations: maximum iterations for uniforming
+ *   - max_iterations: zero stops after reseeding; positive runs one smoothing sweep then at most this many edge-flip passes
  *   - out_num_vertices: receives number of output vertices
  *   - out_num_faces: receives number of output faces
  *   returns 0 on success, non-zero on error

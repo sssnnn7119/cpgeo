@@ -64,6 +64,27 @@ def test_spherical_triangulation_retains_close_vertices():
     assert np.all(capi.get_mesh_edges(faces)[:, 2] == 2)
 
 
+def test_tight_cluster_away_from_pole_preserves_spherical_connectivity():
+    # A distant insertion must not create overlapping Delaunay cavities inside
+    # a previously inserted cluster. This scale occurs on mirrored cylinders.
+    i = np.arange(80)
+    z = 1 - 2 * (i + 0.5) / len(i)
+    angle = i * np.pi * (3 - np.sqrt(5))
+    radius = np.sqrt(1 - z*z)
+    sphere = np.column_stack((radius * np.cos(angle), radius * np.sin(angle), z))
+    cluster = [0.2, -0.6, -0.77] + 1e-9 * np.random.default_rng(334).normal(size=(60, 3))
+    vertices = np.vstack((cluster / np.linalg.norm(cluster, axis=1, keepdims=True), sphere))
+
+    faces = capi.get_sphere_triangulation(vertices)
+    assert len(faces) == 2 * len(vertices) - 4
+    np.testing.assert_array_equal(np.unique(faces), np.arange(len(vertices)))
+    directed = faces[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2)
+    assert len(np.unique(directed, axis=0)) == len(directed)
+    assert np.all(capi.get_mesh_edges(faces)[:, 2] == 2)
+    a, b, c = vertices[faces].transpose(1, 0, 2)
+    assert np.all(np.einsum("ij,ij->i", a, np.cross(b - a, c - a)) < 0)
+
+
 def test_smoothing_decreases_edge_loss_within_volume_tolerance(surface):
     knots, controls, tree = surface
     initial, faces = capi.uniformly_mesh(knots, controls, tree, seed_size=4, max_iterations=0)
@@ -84,3 +105,46 @@ def test_smoothing_decreases_edge_loss_within_volume_tolerance(surface):
     np.testing.assert_allclose(np.linalg.norm(smoothed, axis=1), 1.0)
     assert edge_loss(smoothed) < edge_loss(initial)
     assert abs(volume(smoothed) / volume(initial) - 1.0) < 0.05
+
+
+def test_patch_sweep_moves_seeds_only_once_and_preserves_anchors(surface):
+    knots, controls, tree = surface
+    fixed_count = 5
+
+    def remesh(iterations):
+        return capi.uniformly_mesh(knots, controls, tree, seed_size=1.0,
+                                   max_iterations=iterations, fixed_count=fixed_count)
+
+    initial, faces = remesh(0)
+    once, _ = remesh(1)
+    larger_budget, _ = remesh(4)
+    assert len(once) - fixed_count > 64
+    np.testing.assert_array_equal(once[:fixed_count], knots[:fixed_count])
+    assert np.linalg.norm(once - initial) > 1e-6
+    np.testing.assert_allclose(larger_budget, once, rtol=0, atol=1e-12)
+    a, b, c = once[faces].transpose(1, 0, 2)
+    determinants = np.einsum('ij,ij->i', a, np.cross(b, c))
+    assert np.all(determinants > 0) or np.all(determinants < 0)
+
+
+def test_smoothing_preserves_mapped_face_orientation_across_overlapping_patches():
+    i = np.arange(120)
+    z = 1 - 2 * (i + 0.5) / len(i)
+    angle = i * np.pi * (3 - np.sqrt(5))
+    radius = np.sqrt(1 - z*z)
+    knots = np.column_stack((radius * np.cos(angle), radius * np.sin(angle), z))
+    radial_scale = 1 + 0.6 * np.random.default_rng(23).normal(size=(len(i), 1))
+    controls = knots * radial_scale * [2, 2, 4]
+    tree = capi.space_tree_create(knots, capi.compute_thresholds(knots, 20))
+    try:
+        seeds, faces = capi.uniformly_mesh(knots, controls, tree, 0.55, 0)
+        smoothed, _ = capi.uniformly_mesh(knots, controls, tree, 0.55, 1)
+
+        def normals(points):
+            a, b, c = capi.map_points(points, tree, controls)[faces].transpose(1, 0, 2)
+            return np.cross(b-a, c-a)
+
+        # Compare identical faces before the optional final edge flips.
+        assert np.all(np.einsum("ij,ij->i", normals(seeds), normals(smoothed)) > 0)
+    finally:
+        capi.space_tree_destroy(tree)
