@@ -308,10 +308,29 @@ CPGEO_API void cpgeo_map_points_derivative2(
 );
 
 /** Initialize one unit-sphere knot per control vertex of a closed genus-zero mesh.
- * On success, out_knots contains 3*num_vertices doubles and faces are oriented outward.
+ * On success, out_knots contains 3*num_vertices doubles and faces point outward on
+ * the reference sphere. Consistently wound input faces keep their vertex order.
  * Returns -1 for invalid topology/input and -2 for numerical failure.
  */
 CPGEO_API int cpgeo_initialize_knots(int* faces, int num_faces, int num_vertices, double* out_knots);
+
+/** Fit six clamped bicubic patches to a CPGEO surface on the cubed sphere.
+ * spans is the number of equal knot intervals on each axis (1..128).
+ * Supply out_poles[6][spans+3][spans+3][3] in (face,u,v,xyz) order.
+ * out_metrics receives sampled maximum and RMS position errors and maximum
+ * seam-normal angle in degrees. Returns 0 on success, -1 for invalid input,
+ * or -2 for a numerical failure or a singular seam.
+ */
+CPGEO_API int cpgeo_fit_bspline_patches(cpgeo_handle_t tree, const double* controls,
+    int count, int spans, double* out_poles, double* out_metrics);
+
+/** Fit four side patches per axial band and two square caps (1..32 bands).
+ * chart[12] holds unit north, tangent and bitangent vectors, inverse pole
+ * coordinate and the two positive stereographic cap radii. The caller supplies
+ * out_poles[4*bands+2][spans+3][spans+3][3]; metrics follow the six-face API.
+ */
+CPGEO_API int cpgeo_fit_banded_bspline_patches(cpgeo_handle_t tree, const double* controls,
+    int count, int spans, const double* chart, int bands, double* out_poles, double* out_metrics);
 
 /**
  * Fit physical control points at the knots of the reconstructed reference tree.
@@ -323,6 +342,16 @@ CPGEO_API int cpgeo_initialize_knots(int* faces, int num_faces, int num_vertices
 CPGEO_API int cpgeo_fit_reconstructed_control_points(
     cpgeo_handle_t tree, const double* targets, int num_points, double alpha, double* out_points
 );
+
+/** Evaluate a root patch at count (u,v) pairs. chart is NULL for a cube or
+ * the same twelve values as cpgeo_fit_banded_bspline_patches. */
+CPGEO_API int cpgeo_patch_reference(int face, const double* chart, const double* uv,
+    int count, double* xyz);
+/** Interpolate columns of cubic spline data on size increasing breaks.
+ * data and poles both have (size+2)*columns entries; data rows contain
+ * the left derivative, all sample values, and the right derivative. */
+CPGEO_API int cpgeo_interpolate_cubic(const double* breaks, int size,
+    const double* data, int columns, double* poles);
 
 /** Constrained fit. The first fixed_count control points take the supplied XYZ values exactly.
  * All num_points samples, including those at the fixed controls' knots, remain fitting targets. */
@@ -341,7 +370,7 @@ CPGEO_API int cpgeo_fit_with_fixed_controls(
  *   - num_control_points: number of control points
  *   - tree: SpaceTree handle
  *   - seed_size: desired seed size for remeshing
- *   - max_iterations: maximum iterations for uniforming
+ *   - max_iterations: number of rounds of patch smoothing followed by edge flipping; zero stops after reseeding
  *   - out_num_vertices: receives number of output vertices
  *   - out_num_faces: receives number of output faces
  *   returns 0 on success, non-zero on error

@@ -182,6 +182,19 @@ _indices = np.ctypeslib.ndpointer(dtype=np.int64, ndim=1, flags="C_CONTIGUOUS")
 _faces = np.ctypeslib.ndpointer(dtype=np.int32, ndim=2, flags="C_CONTIGUOUS")
 _int_out = ctypes.POINTER(ctypes.c_int)
 _lib.cpgeo_initialize_knots.argtypes = [_faces, ctypes.c_int, ctypes.c_int, _xyz]
+_vector = np.ctypeslib.ndpointer(dtype=np.float64, ndim=1, flags="C_CONTIGUOUS")
+_lib.cpgeo_patch_reference.argtypes = [
+    ctypes.c_int, ctypes.POINTER(ctypes.c_double), _xyz, ctypes.c_int, _xyz,
+]
+_lib.cpgeo_interpolate_cubic.argtypes = [_vector, ctypes.c_int, _xyz, ctypes.c_int, _xyz]
+_lib.cpgeo_fit_bspline_patches.argtypes = [
+    cpgeo_handle_t, _xyz, ctypes.c_int, ctypes.c_int, _xyz, _xyz,
+]
+_lib.cpgeo_fit_banded_bspline_patches.argtypes = [
+    cpgeo_handle_t, _xyz, ctypes.c_int, ctypes.c_int,
+    np.ctypeslib.ndpointer(dtype=np.float64, ndim=1, flags="C_CONTIGUOUS"),
+    ctypes.c_int, _xyz, _xyz,
+]
 _lib.cpgeo_fit_with_fixed_controls.argtypes = [
     cpgeo_handle_t, _xyz, ctypes.c_int, ctypes.c_double, _xyz, ctypes.c_int, _xyz,
 ]
@@ -845,6 +858,62 @@ def initialize_knots(faces, num_vertices):
     if triangles is not faces:
         faces[...] = triangles
     return knots
+
+
+def patch_reference(face, uv, frame=None):
+    """Map local [0,1]² coordinates on an adaptive root face to unit vectors."""
+    uv = np.ascontiguousarray(uv, dtype=np.float64)
+    if uv.ndim != 2 or uv.shape[1] != 2:
+        raise ValueError("Expected (N, 2) patch coordinates")
+    chart = None
+    if frame is not None:
+        frame = np.ascontiguousarray(frame, dtype=np.float64)
+        if frame.shape != (12,):
+            raise ValueError("Expected a 12-element chart frame")
+        chart = frame.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    xyz = np.empty((len(uv), 3))
+    if _lib.cpgeo_patch_reference(face, chart, uv, len(uv), xyz):
+        raise ValueError("Invalid root patch")
+    return xyz
+
+
+def interpolate_cubic(breaks, data):
+    """Interpolate along axis zero. End rows prescribe first derivatives."""
+    breaks = np.ascontiguousarray(breaks, dtype=np.float64)
+    data = np.ascontiguousarray(data, dtype=np.float64)
+    if breaks.ndim != 1 or len(breaks) < 2 or len(data) != len(breaks) + 2:
+        raise ValueError("Incompatible interpolation data")
+    rows = data.reshape(len(data), -1)
+    poles = np.empty_like(rows)
+    if _lib.cpgeo_interpolate_cubic(breaks, len(breaks), rows, rows.shape[1], poles):
+        raise ValueError("Invalid spline interpolation grid")
+    return poles.reshape(data.shape)
+
+
+def fit_bspline_patches(tree_handle, controls, spans, *, axial_chart=None):
+    """Fit one resolution of the clamped cubic patches."""
+    if not isinstance(spans, (int, np.integer)) or not 1 <= spans <= 128:
+        raise ValueError("spans must be an integer between 1 and 128")
+    controls = _xyz_array(controls)
+    metrics = np.empty((1, 3))
+    if axial_chart is None:
+        poles = np.empty((6, spans + 3, spans + 3, 3))
+        status = _lib.cpgeo_fit_bspline_patches(tree_handle, controls, len(controls), spans,
+                                               poles.reshape(-1, 3), metrics)
+    else:
+        chart, bands = axial_chart
+        chart = np.ascontiguousarray(chart, dtype=np.float64)
+        if chart.shape != (12,) or not isinstance(bands, (int, np.integer)) or not 1 <= bands <= 32:
+            raise ValueError("Expected a 12-element axial chart and 1..32 bands")
+        poles = np.empty((4 * bands + 2, spans + 3, spans + 3, 3))
+        status = _lib.cpgeo_fit_banded_bspline_patches(
+            tree_handle, controls, len(controls), spans, chart, bands, poles.reshape(-1, 3), metrics,
+        )
+    if status == -1:
+        raise ValueError("Invalid control points or reference tree for spline fit")
+    if status:
+        raise RuntimeError("Spline fitting failed to converge or encountered a singular seam")
+    return poles, metrics[0]
 
 
 def fit_reconstructed_control_points(tree_handle, targets, alpha=0.1, fixed_points=None):

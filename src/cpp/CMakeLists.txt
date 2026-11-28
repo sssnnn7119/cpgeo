@@ -7,6 +7,7 @@ add_library(cpgeo SHARED
     src/triangulation.cpp
     src/sphere_triangulation.cpp
     src/cpgeo_mapping.cpp
+    src/bspline_patches.cpp
     src/knot_initialization.cpp
     src/reconstruction_fit.cpp
     src/cpgeo_seeding.cpp
@@ -31,6 +32,9 @@ add_library(cpgeo SHARED
 
 # Add alias for consistent naming
 add_library(cpgeo::cpgeo ALIAS cpgeo)
+
+find_package(Threads REQUIRED)
+target_link_libraries(cpgeo PRIVATE Threads::Threads)
 
 # Set library properties
 set_target_properties(cpgeo PROPERTIES
@@ -100,7 +104,7 @@ target_include_directories(cpgeo_demo PRIVATE
 )
 
 # Link the executable with the library
-target_link_libraries(cpgeo_demo PRIVATE cpgeo::cpgeo)
+target_link_libraries(cpgeo_demo PRIVATE cpgeo::cpgeo Threads::Threads)
 
 # C++20 standard for demo
 set_property(TARGET cpgeo_demo PROPERTY CXX_STANDARD 20)

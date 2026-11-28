@@ -38,7 +38,7 @@ void vertice_smoothing(std::vector<double>& vertices_sphere, std::span<int> face
  * @param control_points Control points influencing the mesh (flat array of x,y,z coordinates)
  * @param tree SpaceTree for efficient spatial queries
  * @param seed_size Desired size for seeding points
- * @param max_iterations Maximum number of iterations for mesh uniforming
+ * @param max_iterations Number of patch smoothing and edge-flip rounds; zero stops after reseeding.
  * @return std::tuple<std::vector<double>, std::vector<int>> Tuple containing:
  *         - Vector of sphere vertices (flat array of x,y,z coordinates)
  *         - Vector of face indices (triplets of vertex indices)

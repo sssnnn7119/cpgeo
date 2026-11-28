@@ -429,8 +429,15 @@ inline bool should_flip_edge(
                                   reference_sphere.data() + 3 * tri[1],
                                   reference_sphere.data() + 3 * tri[2]);
     };
-    return orientation(tri0) * orientation(new_tri0.data()) > 0.0
-        && orientation(tri1) * orientation(new_tri1.data()) > 0.0;
+    // Preserve the winding along the perimeter of the quadrilateral. A
+    // midpoint and its original edge endpoints lie on one great circle:
+    // flipping back across those three seeds creates a zero-area triangle.
+    constexpr double min_orientation = 64 * std::numeric_limits<double>::epsilon();
+    const double sign = std::copysign(1.0, orientation(tri0));
+    return directed_edge_direction(new_tri0.data(), v_opp0, v_shared0) == 1
+        && directed_edge_direction(new_tri1.data(), v_opp1, v_shared1) == 1
+        && sign * orientation(new_tri0.data()) > min_orientation
+        && sign * orientation(new_tri1.data()) > min_orientation;
 }
 
 // Perform the edge flip operation
