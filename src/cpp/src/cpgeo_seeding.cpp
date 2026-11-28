@@ -1,6 +1,13 @@
 #include "csr_cg.h"
 #include "cpgeo_seeding.h"
 #include <algorithm>
+#include <numeric>
+#include <condition_variable>
+#include <functional>
+#include <deque>
+#include <set>
+#include <mutex>
+#include <thread>
 #include <iostream>
 #include <fstream>
 #include <cmath>
@@ -31,16 +38,6 @@ namespace cpgeo {
         ofs.close();
     
     }
-
-// Twice the oriented area of a triangle on the mapped physical surface.
-static std::array<double, 3> face_normal(std::span<const double> points, const int* face) {
-    const double* a = points.data() + 3*face[0];
-    const double* b = points.data() + 3*face[1];
-    const double* c = points.data() + 3*face[2];
-    return {(b[1]-a[1])*(c[2]-a[2]) - (b[2]-a[2])*(c[1]-a[1]),
-            (b[2]-a[2])*(c[0]-a[0]) - (b[0]-a[0])*(c[2]-a[2]),
-            (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0])};
-}
 
 static bool can_collapse(int a, int b, const std::array<double, 3>& midpoint,
                          const std::vector<std::vector<int>>& neighbors,
@@ -346,9 +343,16 @@ static std::vector<std::vector<int>> smoothing_cores(std::span<const double> ver
     return cores;
 }
 
+struct PatchFace {
+    std::array<int, 3> local;
+    int mesh_index;
+};
+
 struct SmoothingPatch {
-    std::vector<int> ids, edges, faces, face_ids;
+    std::vector<int> ids, edges;
+    std::vector<PatchFace> faces;
     int active_count;
+    double volume_budget6 = 0.0;
 };
 
 // Movable vertices come first. All triangles and springs incident on them
@@ -356,7 +360,8 @@ struct SmoothingPatch {
 static SmoothingPatch make_patch(const std::vector<int>& core, int fixed_count,
                                  const std::vector<std::vector<int>>& neighbors,
                                  const std::vector<std::vector<int>>& incident,
-                                 std::span<const int> triangles, std::vector<int>& index) {
+                                 std::span<const int> triangles, std::vector<int>& index,
+                                 std::vector<int>& face_uses) {
     SmoothingPatch patch;
     auto add = [&](int v) {
         if (index[v] < 0) {
@@ -386,8 +391,8 @@ static SmoothingPatch make_patch(const std::vector<int>& core, int fixed_count,
         for (int f : incident[patch.ids[i]]) {
             int a = index[triangles[3*f]], b = index[triangles[3*f+1]], c = index[triangles[3*f+2]];
             if (std::min({a,b,c}) == i) {
-                patch.faces.insert(patch.faces.end(), {a,b,c});
-                patch.face_ids.push_back(f);
+                patch.faces.push_back({{a,b,c}, f});
+                ++face_uses[f];
             }
         }
     }
@@ -395,14 +400,63 @@ static SmoothingPatch make_patch(const std::vector<int>& core, int fixed_count,
     return patch;
 }
 
+using Point3 = std::array<double, 3>;
+
+static double dot(const Point3& a, const Point3& b) {
+    return std::inner_product(a.begin(), a.end(), b.begin(), 0.0);
+}
+
+static Point3 cross(const Point3& a, const Point3& b) {
+    return {a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]};
+}
+
+// Maximize the smallest stereographic denominator 1 - pole.dot(point) over
+// the movable vertices. Keep the same chart for all Newton steps in the patch.
+static SphereFrame patch_frame(std::span<const double> points) {
+    Point3 pole{}, opposite_center{};
+    for (size_t i = 0; i < points.size(); ++i) opposite_center[i % 3] -= points[i];
+    double best = -1.0;
+    auto consider = [&](Point3 candidate) {
+        const double length = std::sqrt(dot(candidate, candidate));
+        if (length < 1e-12) return;
+        for (double& x : candidate) x /= length;
+        double margin = 2.0;
+        for (size_t i = 0; i < points.size(); i += 3) {
+            const double alignment = std::inner_product(candidate.begin(), candidate.end(), points.data()+i, 0.0);
+            margin = std::min(margin, 1.0 - alignment);
+        }
+        if (margin > best) {
+            best = margin;
+            pole = candidate;
+        }
+    };
+    consider(opposite_center);
+    for (int d = 0; d < 3; ++d) {
+        Point3 axis{};
+        axis[d] = 1.0;
+        consider(axis);
+        axis[d] = -1.0;
+        consider(axis);
+    }
+    // Coarse patches can span both ends of all three coordinate axes.
+    consider({1.0, 1.0, 1.0});
+    Point3 axis{};
+    const auto least_aligned = std::min_element(pole.begin(), pole.end(),
+        [](double a, double b) { return std::abs(a) < std::abs(b); });
+    axis[least_aligned - pole.begin()] = 1.0;
+    auto tangent = cross(axis, pole);
+    double length = std::sqrt(dot(tangent, tangent));
+    for (double& x : tangent) x /= length;
+    return {{tangent, cross(pole, tangent), pole}};
+}
+
 static std::vector<double> newton_direction(SmoothingSystem system) {
     const int n = static_cast<int>(system.gradient.size());
     std::vector<double> scale(n, 1.0), rhs(n);
     for (int i = 0; i < n; ++i) {
-        for (int k = system.row_offsets[i]; k < system.row_offsets[i+1]; ++k) {
+        for (int k = system.row_offsets[i]; k < system.row_offsets[i+1]; ++k)
             if (system.columns[k] == i && system.values[k] != 0.0)
                 scale[i] = 1.0 / std::sqrt(std::abs(system.values[k]));
-        }
         rhs[i] = -system.gradient[i] * scale[i];
     }
     for (int i = 0; i < n; ++i)
@@ -411,15 +465,12 @@ static std::vector<double> newton_direction(SmoothingSystem system) {
 
     std::vector<double> step;
     conjugate_gradient(system.row_offsets, system.columns, system.values, rhs, step, 10000, 1e-6);
-    double slope = 0.0;
     for (int i = 0; i < n; ++i) {
         step[i] *= scale[i];
-        if (!std::isfinite(step[i])) return {};
-        slope += step[i] * system.gradient[i];
+        if (!std::isfinite(step[i])) step[i] = 0.0;
     }
-    if (!std::isfinite(slope) || slope == 0.0) return {};
-    if (slope > 0.0)
-        for (double& value : step) value = -value;
+    if (std::inner_product(step.begin(), step.end(), system.gradient.begin(), 0.0) > 0.0)
+        for (double& x : step) x = -x;
     return step;
 }
 
@@ -427,85 +478,245 @@ static double face_determinant(std::span<const double> vertices, const int* tri)
     return sphere_orientation(vertices.data()+3*tri[0], vertices.data()+3*tri[1], vertices.data()+3*tri[2]);
 }
 
-static bool smooth_patch(const SmoothingPatch& patch, std::vector<double>& vertices,
-                         SpaceTree& tree, std::span<const double> controls,
-                         std::span<const std::array<double, 3>> normals,
-                         double initial_volume6, double& volume6) {
+enum class PatchStop { small_step, line_search_failed, iteration_limit };
+
+struct PatchResult {
+    PatchStop reason;
+    int accepted_steps;
+};
+
+static PatchResult smooth_patch(const SmoothingPatch& patch, std::vector<double>& local,
+                                SpaceTree& tree, std::span<const double> controls) {
+    constexpr int max_newton_steps = 500;
     const int n = patch.active_count;
-    std::vector<double> local(3*patch.ids.size());
-    for (size_t i = 0; i < patch.ids.size(); ++i)
-        std::copy_n(vertices.data()+3*patch.ids[i], 3, local.data()+3*i);
-
-    // Use the stereographic pole farther from each movable vertex. The UV
-    // derivatives and the trial update of that vertex use the same chart.
-    std::vector<double> jacobian(6*n), hessian(12*n);
-    std::vector<std::array<double,2>> uv(n);
-    for (bool north : {false, true}) {
-        std::vector<int> rows;
-        std::vector<double> points;
-        for (int i = 0; i < n; ++i) {
-            if ((local[3*i+2] < 0) != north) continue;
-            rows.push_back(i);
-            points.insert(points.end(), local.data()+3*i, local.data()+3*i+3);
-            uv[i] = stereographicProjection3_2(std::span<const double,3>(local.data()+3*i, 3), north);
-        }
-        if (rows.empty()) continue;
-        auto [r, du, d2u] = map_points_batch_derivative2(points, tree, controls, north);
-        for (size_t j = 0; j < rows.size(); ++j) {
-            std::copy_n(du.data()+6*j, 6, jacobian.data()+6*rows[j]);
-            std::copy_n(d2u.data()+12*j, 12, hessian.data()+12*rows[j]);
-        }
-    }
+    const auto active = [&](const std::vector<double>& points) {
+        return std::span<const double>(points).first(3*n);
+    };
+    const auto frame = patch_frame(active(local));
     auto mapped = map_points_batch(local, tree, controls);
-    auto step = newton_direction(assemble_uv_system(mapped, jacobian, hessian, patch.edges, n));
-    if (step.empty()) return false;
-    const double loss = closure_edge_length_derivative0(mapped, 3, patch.edges, order);
-    std::vector<double> before(patch.faces.size()/3);
-    for (size_t f = 0; f < before.size(); ++f) {
-        const int* face = patch.faces.data()+3*f;
-        before[f] = face_determinant(local, face);
+    auto trial = local;
+    auto trial_mapped = mapped;
+    std::vector<std::array<double,2>> uv(n);
+    // Only faces incident on movable vertices contribute to this patch's change.
+    // The common apex is the parameter sphere origin; the factor 1/6 cancels.
+    std::vector<double> initial_faces(patch.faces.size());
+    for (size_t f = 0; f < initial_faces.size(); ++f)
+        initial_faces[f] = face_determinant(local, patch.faces[f].local.data());
+    const double initial_volume6 = std::accumulate(initial_faces.begin(), initial_faces.end(), 0.0);
+    const double volume_tolerance6 = std::min(patch.volume_budget6, 0.05 * std::abs(initial_volume6));
+    double loss = closure_edge_length_derivative0(mapped, 3, patch.edges, order);
+    for (int iter = 0; iter < max_newton_steps; ++iter) {
+        auto [r, jacobian, hessian] = map_points_batch_derivative2(active(local), tree, controls, frame);
+        // Fixed neighbors contribute springs but have no UV unknowns.
+        std::copy(r.begin(), r.end(), mapped.begin());
+        auto step = newton_direction(assemble_uv_system(mapped, jacobian, hessian, patch.edges, n));
+        const double norm2 = std::inner_product(step.begin(), step.end(), step.begin(), 0.0);
+        if (norm2 < 0.1 * 0.1) return {PatchStop::small_step, iter};
+
+        for (int i = 0; i < n; ++i)
+            uv[i] = stereographicProjection3_2(frame.local(std::span<const double,3>(local.data()+3*i, 3)));
+
+        bool accepted = false;
+        double alpha = 1.0;
+        for (int bt = 0; bt < 30; ++bt, alpha *= 0.5) {
+            for (int i = 0; i < n; ++i) {
+                std::array<double,2> q{uv[i][0]+alpha*step[2*i], uv[i][1]+alpha*step[2*i+1]};
+                auto p = frame.world(stereographicProjection2_3(q));
+                double length = std::sqrt(dot(p, p));
+                for (int d = 0; d < 3; ++d) trial[3*i+d] = p[d]/length;
+            }
+            bool oriented = true;
+            double trial_volume6 = 0.0;
+            for (size_t f = 0; f < initial_faces.size(); ++f) {
+                double after = face_determinant(trial, patch.faces[f].local.data());
+                if (!(initial_faces[f]*after > 0.0)) {
+                    oriented = false;
+                    break;
+                }
+                trial_volume6 += after;
+            }
+            if (!oriented || !(std::abs(trial_volume6 - initial_volume6) < volume_tolerance6))
+                continue;
+            auto moved = map_points_batch(active(trial), tree, controls);
+            std::copy(moved.begin(), moved.end(), trial_mapped.begin());
+            const double next_loss = closure_edge_length_derivative0(trial_mapped, 3, patch.edges, order);
+            if (!(next_loss < loss)) continue;
+
+            loss = next_loss;
+            local.swap(trial);
+            mapped.swap(trial_mapped);
+            accepted = true;
+            break;
+        }
+        if (!accepted) return {PatchStop::line_search_failed, iter};
+    }
+    return {PatchStop::iteration_limit, max_newton_steps};
+}
+
+struct PatchOrder {
+    std::vector<std::vector<int>> successors;
+    std::vector<int> pending;
+    int widest_level = 1;
+};
+
+// Preserve the serial order of every read/write and write/write conflict.
+// Two patches may share any number of read-only boundary vertices.
+static PatchOrder patch_order(const std::vector<SmoothingPatch>& patches, size_t vertex_count) {
+    const int count = static_cast<int>(patches.size());
+    PatchOrder order;
+    order.successors.resize(count);
+    order.pending.resize(count);
+    std::vector<int> writer(vertex_count, -1), seen(count, -1), level(count), width(count);
+    std::vector<std::vector<int>> readers(vertex_count);
+    for (int i = 0; i < count; ++i) {
+        auto depend_on = [&](int earlier) {
+            if (earlier < 0 || seen[earlier] == i) return;
+            seen[earlier] = i;
+            order.successors[earlier].push_back(i);
+            ++order.pending[i];
+            level[i] = std::max(level[i], level[earlier]+1);
+        };
+        const auto& patch = patches[i];
+        for (size_t j = 0; j < patch.ids.size(); ++j) {
+            const int v = patch.ids[j];
+            depend_on(writer[v]);
+            if (j < static_cast<size_t>(patch.active_count)) {
+                for (int reader : readers[v]) depend_on(reader);
+                readers[v].clear();
+                writer[v] = i;
+            } else {
+                readers[v].push_back(i);
+            }
+        }
+        order.widest_level = std::max(order.widest_level, ++width[level[i]]);
+    }
+    return order;
+}
+
+struct PatchCandidate {
+    std::vector<double> local;
+    PatchResult result{};
+};
+
+static PatchCandidate solve_patch(const SmoothingPatch& patch, std::span<const double> vertices,
+                                  SpaceTree& tree, std::span<const double> controls) {
+    PatchCandidate candidate;
+    candidate.local.resize(3*patch.ids.size());
+    for (size_t i = 0; i < patch.ids.size(); ++i)
+        std::copy_n(vertices.data()+3*patch.ids[i], 3, candidate.local.data()+3*i);
+    candidate.result = smooth_patch(patch, candidate.local, tree, controls);
+    return candidate;
+}
+
+// The producer owns geometry commits. Workers publish only private candidates.
+class PatchWorkers {
+public:
+    using Solve = std::function<PatchCandidate(int)>;
+
+    PatchWorkers(int threads, Solve solve) : solve_(std::move(solve)) {
+        try {
+            for (int i = 0; i < threads; ++i)
+                workers_.emplace_back([this] { consume(); });
+        } catch (...) {
+            shutdown();
+            throw;
+        }
     }
 
-    auto trial = local;
-    double alpha = 1.0;
-    for (int bt = 0; bt < 30; ++bt, alpha *= 0.5) {
-        for (int i = 0; i < n; ++i) {
-            std::array<double,2> q{uv[i][0]+alpha*step[2*i], uv[i][1]+alpha*step[2*i+1]};
-            auto p = stereographicProjection2_3(q, local[3*i+2] < 0);
-            std::copy(p.begin(), p.end(), trial.begin()+3*i);
+    ~PatchWorkers() { shutdown(); }
+
+    void submit(int index) {
+        {
+            std::lock_guard lock(mutex_);
+            ready_.insert(index);
         }
-        double change = 0.0;
-        bool oriented = true;
-        for (size_t f = 0; f < before.size(); ++f) {
-            double after = face_determinant(trial, patch.faces.data()+3*f);
-            if (!(before[f]*after > 0.0)) {
-                oriented = false;
-                break;
+        available_.notify_one();
+    }
+
+    std::pair<int, PatchCandidate> take() {
+        std::unique_lock lock(mutex_);
+        completed_.wait(lock, [&] { return error_ || !finished_.empty(); });
+        if (error_) std::rethrow_exception(error_);
+        auto finished = std::move(finished_.front());
+        finished_.pop_front();
+        return finished;
+    }
+
+private:
+    void consume() {
+        // Use the worker budget for independent patches, not nested OpenMP teams.
+        omp_set_num_threads(1);
+        try {
+            while (true) {
+                std::unique_lock lock(mutex_);
+                available_.wait(lock, [&] { return stopping_ || !ready_.empty(); });
+                if (stopping_) return;
+                const int index = *ready_.begin();
+                ready_.erase(ready_.begin());
+                lock.unlock();
+                auto candidate = solve_(index);
+                lock.lock();
+                finished_.emplace_back(index, std::move(candidate));
+                lock.unlock();
+                completed_.notify_one();
             }
-            change += after - before[f];
-        }
-        const double next_volume6 = volume6 + change;
-        if (!oriented || !(std::abs(next_volume6 - initial_volume6) < .05*std::abs(initial_volume6)))
-            continue;
-        auto moved = map_points_batch(std::span<const double>(trial).first(3*n), tree, controls);
-        std::copy(moved.begin(), moved.end(), mapped.begin());
-        // A triangle with consistent spherical winding can still fold in physical space.
-        for (size_t f = 0; f < patch.face_ids.size(); ++f) {
-            const auto next = face_normal(mapped, patch.faces.data()+3*f);
-            const auto& old = normals[patch.face_ids[f]];
-            if (!(old[0]*next[0] + old[1]*next[1] + old[2]*next[2] > 0.0)) {
-                oriented = false;
-                break;
-            }
-        }
-        if (oriented && closure_edge_length_derivative0(mapped, 3, patch.edges, order) < loss) {
-            for (int i = 0; i < n; ++i)
-                std::copy_n(trial.data()+3*i, 3, vertices.data()+3*patch.ids[i]);
-            volume6 = next_volume6;
-            return true;
+        } catch (...) {
+            std::lock_guard lock(mutex_);
+            error_ = std::current_exception();
+            completed_.notify_one();
         }
     }
-    return false;
+
+    void shutdown() {
+        {
+            std::lock_guard lock(mutex_);
+            stopping_ = true;
+        }
+        available_.notify_all();
+        for (auto& worker : workers_) worker.join();
+    }
+
+    Solve solve_;
+    std::mutex mutex_;
+    std::condition_variable available_, completed_;
+    std::set<int> ready_;
+    std::deque<std::pair<int, PatchCandidate>> finished_;
+    std::exception_ptr error_;
+    bool stopping_ = false;
+    std::vector<std::thread> workers_;
+};
+
+static std::vector<PatchResult> run_patch_sweep(const std::vector<SmoothingPatch>& patches,
+                                                std::vector<double>& vertices, SpaceTree& tree,
+                                                std::span<const double> controls) {
+    const int count = static_cast<int>(patches.size());
+    std::vector<PatchResult> results(count);
+    auto solve = [&](int i) { return solve_patch(patches[i], vertices, tree, controls); };
+    auto publish = [&](int i, const PatchCandidate& candidate) {
+        results[i] = candidate.result;
+        if (candidate.result.accepted_steps == 0) return;
+        for (int j = 0; j < patches[i].active_count; ++j)
+            std::copy_n(candidate.local.data()+3*j, 3, vertices.data()+3*patches[i].ids[j]);
+    };
+    if (omp_get_max_threads() == 1) {
+        for (int i = 0; i < count; ++i) publish(i, solve(i));
+        return results;
+    }
+
+    auto order = patch_order(patches, vertices.size()/3);
+    PatchWorkers pool(std::min(omp_get_max_threads(), order.widest_level), solve);
+    for (int i = 0; i < count; ++i)
+        if (order.pending[i] == 0) pool.submit(i);
+
+    // Once all conflicting predecessors have published, both the coordinates
+    // and the volume baseline for the successor match the serial sweep.
+    for (int finished = 0; finished < count; ++finished) {
+        auto [i, candidate] = pool.take();
+        publish(i, candidate);
+        for (int successor : order.successors[i])
+            if (--order.pending[successor] == 0) pool.submit(successor);
+    }
+    return results;
 }
 
 void vertice_smoothing(std::vector<double>& vertices_sphere, std::span<int> faces,
@@ -523,26 +734,38 @@ void vertice_smoothing(std::vector<double>& vertices, std::span<int> faces,
         neighbors[a].push_back(b);
         neighbors[b].push_back(a);
     }
-    // A face contribution is six times its signed tetrahedral volume.
-    const auto mapped = map_points_batch(vertices, tree, controls);
-    // Overlapping patches can move a seed several times. Use one physical
-    // reference normal per face for the whole sweep.
-    std::vector<std::array<double, 3>> normals(faces.size()/3);
-    double volume6 = 0.0;
     for (size_t i = 0; i < faces.size(); i += 3) {
         for (int d = 0; d < 3; ++d) incident[faces[i+d]].push_back(static_cast<int>(i/3));
-        normals[i/3] = face_normal(mapped, faces.data()+i);
-        volume6 += face_determinant(vertices, faces.data()+i);
     }
-    const double initial_volume6 = volume6;
     std::vector<int> index(vertices.size()/3, -1);
-    size_t accepted = 0;
-    for (const auto& core : cores) {
-        auto patch = make_patch(core, fixed_count, neighbors, incident, faces, index);
-        if (smooth_patch(patch, vertices, tree, controls, normals, initial_volume6, volume6))
-            ++accepted;
+    std::vector<int> face_uses(faces.size()/3);
+    std::vector<SmoothingPatch> patches;
+    patches.reserve(cores.size());
+    for (const auto& core : cores)
+        patches.push_back(make_patch(core, fixed_count, neighbors, incident, faces, index, face_uses));
+
+    // Allocate each movable face's allowance exactly once, using its signed
+    // tetrahedral contribution at sweep entry. The parameter triangles have
+    // consistent winding, so their magnitudes add to the mesh volume (times 6).
+    std::vector<double> face_share6(face_uses.size());
+    for (size_t f = 0; f < face_uses.size(); ++f) {
+        if (face_uses[f] > 0)
+            face_share6[f] = 0.05 * std::abs(face_determinant(vertices, faces.data()+3*f)) / face_uses[f];
     }
-    std::cout << "  - Smoothing sweep: " << accepted << "/" << cores.size() << " patches accepted.\n";
+    for (auto& patch : patches)
+        for (const auto& face : patch.faces)
+            patch.volume_budget6 += face_share6[face.mesh_index];
+
+    size_t converged = 0, stalled = 0, steps = 0;
+    for (const auto& result : run_patch_sweep(patches, vertices, tree, controls)) {
+        converged += result.reason == PatchStop::small_step;
+        stalled += result.reason == PatchStop::line_search_failed;
+        steps += result.accepted_steps;
+    }
+    std::cout << "  - Smoothing sweep: " << converged << "/" << cores.size()
+              << " patches reached the step tolerance, " << stalled << " line searches stalled, "
+              << cores.size()-converged-stalled << " at iteration limit, " << steps
+              << " accepted Newton steps." << std::endl;
 }
 
 std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
@@ -566,16 +789,11 @@ std::tuple<std::vector<double>, std::vector<int>> uniformlyMesh(
     // insert/delete points
     auto faces = insert_delete_points(vertices_sphere, control_points, tree, seed_size, fixed_count);
 
-    if (max_iterations > 0) {
+    for (int round = 0; round < max_iterations; ++round) {
+        std::cout << "  - Mesh uniforming round " << round+1 << "/" << max_iterations << std::endl;
         vertice_smoothing(vertices_sphere, faces, control_points, tree, fixed_count);
         const auto mapped = map_points_batch(vertices_sphere, tree, control_points);
-        // A positive iteration budget requests one smoothing sweep. Any
-        // remaining iterations can settle connectivity without moving seeds.
-        for (int i = 0; i < max_iterations; ++i) {
-            auto next = mesh_optimize_by_edge_flipping(mapped, 3, faces, 10000, vertices_sphere);
-            if (next == faces) break;
-            faces = std::move(next);
-        }
+        faces = mesh_optimize_by_edge_flipping(mapped, 3, faces, 10000, vertices_sphere);
     }
     return {vertices_sphere, faces};
 }

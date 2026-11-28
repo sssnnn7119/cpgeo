@@ -337,12 +337,12 @@ std::array<std::vector<double>, 2> get_weights_derivative1(
     return { rdot, _rdudot };
 }
 
-std::array<std::vector<double>, 3> get_weights_derivative2(
+static std::array<std::vector<double>, 3> weights_derivative2_in_chart(
     const std::span<const int> indices,
     const std::span<const double> knots,
     const std::span<const double> thresholds,
     const std::span<const double, 2> query_points_plane,
-    bool north_pole) {
+    bool north_pole, const SphereFrame* frame) {
 
     const int numIndices = indices.size();
 
@@ -356,10 +356,7 @@ std::array<std::vector<double>, 3> get_weights_derivative2(
 
     auto [query_points, xdu, xdu2] = stereographicProjection2_3Derivative2(query_points_plane, north_pole);
 
-    // Extract query point coordinates once (avoid repeated array access)
-    const double qx = query_points[0];
-    const double qy = query_points[1];
-    const double qz = query_points[2];
+    const auto center = frame ? frame->world(query_points) : query_points;
 
     // compute the initial weights
     for (int idx = 0; idx < numIndices; ++idx) {
@@ -367,11 +364,11 @@ std::array<std::vector<double>, 3> get_weights_derivative2(
         int knot_offset = knot_idx * 3;
 
         // Direct array access instead of separate variable assignments
-        std::array<double, 3> dp = { 
-            qx - knots[knot_offset], 
-            qy - knots[knot_offset + 1], 
-            qz - knots[knot_offset + 2] 
-        };
+        std::array<double, 3> dp = {center[0] - knots[knot_offset],
+                                    center[1] - knots[knot_offset + 1],
+                                    center[2] - knots[knot_offset + 2]};
+        // The inverse projection and its two derivatives are in chart coordinates.
+        if (frame) dp = frame->local(dp);
 
         auto [w, wdx, wdx2_tensor] = weightFunctionDerivative2(dp, thresholds[knot_idx]);
 
@@ -489,6 +486,16 @@ std::array<std::vector<double>, 3> get_weights_derivative2(
 
 
     return { rdot, _rdudot, _rdu2dot};
+}
+
+std::array<std::vector<double>, 3> get_weights_derivative2(
+    const std::span<const int> indices,
+    const std::span<const double> knots,
+    const std::span<const double> thresholds,
+    const std::span<const double, 2> query_points_plane,
+    bool north_pole) {
+
+    return weights_derivative2_in_chart(indices, knots, thresholds, query_points_plane, north_pole, nullptr);
 }
 
 // compute mapped points from control points using sparse weights
@@ -615,11 +622,25 @@ std::vector<double> map_points_batch(
 }
 
 
-std::array<std::vector<double>, 3> map_points_batch_derivative2(
+std::array<double, 3> SphereFrame::local(std::span<const double, 3> point) const {
+    std::array<double, 3> result{};
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) result[i] += axes[i][j] * point[j];
+    return result;
+}
+
+std::array<double, 3> SphereFrame::world(std::span<const double, 3> point) const {
+    std::array<double, 3> result{};
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) result[i] += axes[j][i] * point[j];
+    return result;
+}
+
+static std::array<std::vector<double>, 3> batch_derivative2_in_chart(
     std::span<const double> query_point,
     SpaceTree& tree,
     const std::span<const double> controlpoints,
-    bool north_pole
+    bool north_pole, const SphereFrame* frame
 ) {
 
     int num_queries = static_cast<int>(query_point.size() / 3);
@@ -637,12 +658,11 @@ std::array<std::vector<double>, 3> map_points_batch_derivative2(
         auto indices_cps = tree.query_point(query_point[3 * i], query_point[3 * i + 1], query_point[3 * i + 2]);
 		int num_indices = static_cast<int>(indices_cps.size());
 
-        std::array<double, 2> query_point_plane = stereographicProjection3_2(
-            std::span<const double, 3>(query_point.data() + i * 3, 3),
-            north_pole
-        );
-
-        auto [rdot, rdudot, rdu2dot] = get_weights_derivative2(indices_cps, knots_vec, thresholds_vec, query_point_plane, north_pole);
+        auto point = std::span<const double, 3>(query_point.data() + i * 3, 3);
+        auto plane = frame ? stereographicProjection3_2(frame->local(point), north_pole)
+                           : stereographicProjection3_2(point, north_pole);
+        auto [rdot, rdudot, rdu2dot] = weights_derivative2_in_chart(
+            indices_cps, knots_vec, thresholds_vec, plane, north_pole, frame);
         get_mapped_points_(indices_cps, rdot, controlpoints, std::span<double, 3>( _r.data() + i * 3, 3));
 
         // plane dimensions: 0..1
@@ -670,5 +690,21 @@ std::array<std::vector<double>, 3> map_points_batch_derivative2(
     return { _r, _rdu, _rdu2};
 }
 
+
+std::array<std::vector<double>, 3> map_points_batch_derivative2(
+    std::span<const double> query_point,
+    SpaceTree& tree,
+    const std::span<const double> controlpoints,
+    bool north_pole
+) {
+
+    return batch_derivative2_in_chart(query_point, tree, controlpoints, north_pole, nullptr);
+}
+
+std::array<std::vector<double>, 3> map_points_batch_derivative2(
+    std::span<const double> points, SpaceTree& tree, std::span<const double> controls,
+    const SphereFrame& frame) {
+    return batch_derivative2_in_chart(points, tree, controls, true, &frame);
+}
 
 }

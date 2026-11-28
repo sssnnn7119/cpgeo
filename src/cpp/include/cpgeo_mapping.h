@@ -157,4 +157,15 @@ namespace cpgeo {
         const std::span<const double> controlpoints,
         bool north_pole = true
     );
+
+    // Rows are an orthonormal basis of the reference sphere; row 2 is the pole.
+    struct SphereFrame {
+        std::array<std::array<double, 3>, 3> axes;
+        std::array<double, 3> local(std::span<const double, 3> point) const;
+        std::array<double, 3> world(std::span<const double, 3> point) const;
+    };
+
+    std::array<std::vector<double>, 3> map_points_batch_derivative2(
+        std::span<const double> points, SpaceTree& tree, std::span<const double> controls,
+        const SphereFrame& frame);
 }

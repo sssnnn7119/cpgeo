@@ -245,12 +245,17 @@ class CPGEO:
         """
         Run uniform remeshing using the C API wrapper `capi.uniformly_mesh`.
 
+        Independent patches share a worker pool bounded by the OpenMP thread budget
+        (OMP_NUM_THREADS). Overlapping updates are committed in serial patch order.
+        Each affected reference-sphere triangle divides 5% of its sweep-entry
+        volume contribution among the patches that can move it. Backtracking
+        checks each patch's own allowance and its change since patch entry.
+
         Args:
             init_vertices (np.ndarray, optional): Initial sphere vertices (N,3). If None, uses current knots as starting vertices.
             seed_size (float): Desired seed size for remeshing.
-            max_iterations (int): Zero stops after inserting and deleting seeds. A positive
-                budget runs one overlapping-patch smoothing sweep, then up to this many
-                edge-flip passes.
+            max_iterations (int): Number of rounds of sequential overlapping-patch Newton
+                smoothing followed by edge flipping. Zero only inserts and deletes seeds.
             fixed_count (int): Preserve this many leading seeds throughout remeshing.
 
         Returns:

@@ -33,6 +33,9 @@ add_library(cpgeo SHARED
 # Add alias for consistent naming
 add_library(cpgeo::cpgeo ALIAS cpgeo)
 
+find_package(Threads REQUIRED)
+target_link_libraries(cpgeo PRIVATE Threads::Threads)
+
 # Set library properties
 set_target_properties(cpgeo PROPERTIES
     VERSION ${PROJECT_VERSION}
@@ -101,7 +104,7 @@ target_include_directories(cpgeo_demo PRIVATE
 )
 
 # Link the executable with the library
-target_link_libraries(cpgeo_demo PRIVATE cpgeo::cpgeo)
+target_link_libraries(cpgeo_demo PRIVATE cpgeo::cpgeo Threads::Threads)
 
 # C++20 standard for demo
 set_property(TARGET cpgeo_demo PROPERTY CXX_STANDARD 20)
